@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Open-source Python security audit tool for Oracle E-Business Suite R12.x</strong><br>
-  68 checks across 10 security domains &bull; Live database audit via <code>oracledb</code> &bull; JSON + HTML + Console reports
+  68 checks across 10 security domains &bull; Live DB + Offline CSV modes &bull; JSON + HTML + Console reports
 </p>
 
 <p align="center">
@@ -21,17 +21,16 @@
 
 ## Overview
 
-A single-file Python scanner that connects to an Oracle EBS database and performs **68 security audit checks** across user access, segregation of duties, profile options, database hardening, patching, workflow controls, and more. Designed for security auditors, IT risk teams, and EBS administrators.
+Two single-file Python scanners that perform **68 security audit checks** across user access, segregation of duties, profile options, database hardening, patching, workflow controls, and more. Choose **Live** mode (direct database connection) or **Offline** mode (analyze CSV exports). Designed for security auditors, IT risk teams, and EBS administrators.
 
-| | |
-|---|---|
-| **Scanner** | `oracle_ebs_scanner.py` |
-| **Version** | 1.0.0 |
-| **Lines** | ~2,330 |
-| **Checks** | 68 across 10 categories |
-| **Python** | 3.8+ |
-| **Dependency** | `oracledb` (`pip install oracledb`) |
-| **License** | MIT |
+| Scanner | Mode | Lines | Dependency |
+|---------|------|------:|------------|
+| `oracle_ebs_scanner.py` | Live DB (oracledb) | ~2,330 | `oracledb` |
+| `oracle_ebs_offline_scanner.py` | Offline CSV | ~2,090 | None (stdlib) |
+| `export_ebs_audit_data.sql` | SQL export queries | ~356 | — |
+
+- **68 checks** across 10 categories
+- **Python 3.8+**, MIT License
 
 ---
 
@@ -88,6 +87,38 @@ Options:
 ```
 
 **Exit codes:** `1` if any CRITICAL or HIGH findings, `0` otherwise — ready for CI/CD pipeline gating.
+
+---
+
+## Offline Scanner
+
+When direct database access is not available, use the **offline scanner** to analyze CSV exports:
+
+```bash
+# Step 1: DBA runs export queries and saves each result as CSV
+#         (use SQL*Plus, SQLcl, SQL Developer, Toad, or DBeaver)
+sqlplus APPS/password@EBSPROD @export_ebs_audit_data.sql
+
+# Step 2: Place all CSV files in a directory
+ls ebs_export/
+# instance_info.csv  ebs_users.csv  ebs_user_responsibilities.csv  ...
+
+# Step 3: Run the offline scanner (zero dependencies)
+python oracle_ebs_offline_scanner.py ./ebs_export/
+python oracle_ebs_offline_scanner.py ./ebs_export/ \
+    --json report.json --html report.html --severity HIGH
+
+# Optional: specify the export date for accurate age calculations
+python oracle_ebs_offline_scanner.py ./ebs_export/ --ref-date 2025-01-15
+```
+
+### Required CSV files (4)
+`instance_info.csv`, `ebs_users.csv`, `ebs_user_responsibilities.csv`, `ebs_profile_options.csv`
+
+### Optional CSV files (16)
+`ebs_responsibilities.csv`, `ebs_concurrent_programs.csv`, `ebs_request_group_access.csv`, `ebs_concurrent_requests.csv`, `ebs_audit_config.csv`, `ebs_patches.csv`, `ebs_workflow_components.csv`, `ebs_workflow_stuck.csv`, `ebs_workflow_errors.csv`, `ebs_login_audit_old.csv`, `db_users.csv`, `db_role_privs.csv`, `db_tab_privs.csv`, `db_links.csv`, `db_profiles.csv`, `db_parameters.csv`
+
+> Checks are skipped gracefully when optional CSV files are absent.
 
 ---
 
