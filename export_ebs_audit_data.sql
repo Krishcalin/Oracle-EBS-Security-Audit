@@ -1,5 +1,5 @@
 -- ============================================================================
--- Oracle EBS Security Audit — Data Export Queries  v1.0.0
+-- Oracle EBS Security Audit — Data Export Queries  v1.2.0
 -- ============================================================================
 -- Run these queries against your Oracle EBS database and export each result
 -- set to the corresponding CSV file.  The offline scanner expects these exact
@@ -43,6 +43,7 @@ SELECT
     fu.EMPLOYEE_ID,
     fu.PERSON_PARTY_ID,
     fu.EMAIL_ADDRESS,
+    fu.ENCRYPTED_USER_PASSWORD,
     papf.CURRENT_EMPLOYEE_FLAG AS EMPLOYEE_CURRENT_FLAG
 FROM FND_USER fu
 LEFT JOIN PER_ALL_PEOPLE_F papf
@@ -99,7 +100,18 @@ WHERE fpo.PROFILE_OPTION_NAME IN (
     'SIGN_ON_NOTIFICATION',
     'ICX_LIMIT_CONNECT',
     'SIGNONAUDIT:LEVEL',
-    'AUDITTRAIL:ACTIVATE'
+    'AUDITTRAIL:ACTIVATE',
+    'SELF_REGISTRATION_ENABLED',
+    'SELF_REGISTRATION_APPROVAL',
+    'APPS_SSO',
+    'CONCURRENT_LOGIN_LIMIT',
+    'APPLCSF',
+    'APPLOUT',
+    'UNIQUE:SEQ_NUMBERS',
+    'PERSONALIZE_SELF_SERVICE_DEFN',
+    'FND_ATTACHMENT_STORAGE',
+    'MO:SECURITY_PROFILE',
+    'XLA_MO_SECURITY_PROFILE_LEVEL'
 )
 ORDER BY fpo.PROFILE_OPTION_NAME, fpov.LEVEL_ID;
 
@@ -339,9 +351,212 @@ WHERE NAME IN (
     'remote_os_authent',
     'sec_case_sensitive_logon',
     'os_authent_prefix',
-    'remote_login_passwordfile'
+    'remote_login_passwordfile',
+    'sqlnet.encryption_server',
+    'o7_dictionary_accessibility',
+    'audit_sys_operations',
+    'sec_max_failed_login_attempts'
 )
 ORDER BY NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 21. ebs_logins.csv
+--     Recent EBS login records (last 30 days)
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    LOGIN_NAME,
+    LOGIN_TYPE,
+    TO_CHAR(START_TIME, 'YYYY-MM-DD') AS START_TIME
+FROM FND_LOGINS
+WHERE START_TIME > SYSDATE - 30
+ORDER BY START_TIME DESC;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 22. db_sys_privs.csv
+--     Database system privilege grants
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    GRANTEE,
+    PRIVILEGE,
+    ADMIN_OPTION
+FROM DBA_SYS_PRIVS
+WHERE PRIVILEGE IN (
+    'SELECT ANY TABLE',
+    'ALTER SYSTEM',
+    'CREATE ANY PROCEDURE',
+    'DROP ANY TABLE',
+    'ALTER ANY TABLE',
+    'GRANT ANY PRIVILEGE',
+    'GRANT ANY ROLE'
+)
+ORDER BY PRIVILEGE, GRANTEE;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 23. db_dv_status.csv
+--     Oracle Database Vault status (if installed)
+-- ────────────────────────────────────────────────────────────────────────────
+-- NOTE: This query will fail if Database Vault is not installed.
+--       Simply skip this file if the query errors.
+SELECT NAME, STATUS FROM DBA_DV_STATUS;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 24. db_fga_policies.csv
+--     Fine-Grained Auditing policies
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    OBJECT_SCHEMA,
+    OBJECT_NAME,
+    POLICY_NAME,
+    ENABLED
+FROM DBA_AUDIT_POLICIES
+ORDER BY OBJECT_SCHEMA, OBJECT_NAME, POLICY_NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 25. db_unified_audit.csv
+--     Unified Audit enabled policies (12c+)
+-- ────────────────────────────────────────────────────────────────────────────
+-- NOTE: This query requires Oracle 12c+.  Skip if on 11g.
+SELECT
+    POLICY_NAME,
+    ENABLED_OPTION,
+    ENTITY_NAME,
+    ENTITY_TYPE
+FROM AUDIT_UNIFIED_ENABLED_POLICIES
+ORDER BY POLICY_NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 26. ebs_approval_limits.csv
+--     AP approval limits per user
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    fu.USER_NAME,
+    aal.AMOUNT_LIMIT,
+    aal.CURRENCY_CODE
+FROM AP_APPROVAL_LIMITS aal
+JOIN FND_USER fu ON aal.EMPLOYEE_ID = fu.EMPLOYEE_ID
+WHERE (fu.END_DATE IS NULL OR fu.END_DATE > SYSDATE)
+ORDER BY aal.AMOUNT_LIMIT DESC;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 27. ebs_hold_codes.csv
+--     AP invoice hold codes
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    HOLD_LOOKUP_CODE,
+    HOLD_TYPE,
+    DESCRIPTION,
+    TO_CHAR(INACTIVE_DATE, 'YYYY-MM-DD') AS INACTIVE_DATE
+FROM AP_HOLD_CODES
+ORDER BY HOLD_LOOKUP_CODE;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 28. ebs_lookup_types.csv
+--     Lookup type customization levels
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    LOOKUP_TYPE,
+    CUSTOMIZATION_LEVEL,
+    SECURITY_GROUP_ID
+FROM FND_LOOKUP_TYPES
+WHERE LOOKUP_TYPE IN (
+    'YES_NO','APPROVAL STATUS','HOLD_STATUS',
+    'PAYMENT METHOD','AP_HOLD_CODE','INVOICE TYPE',
+    'CURRENCY_CODE','JOURNAL_TYPE'
+)
+ORDER BY LOOKUP_TYPE;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 29. ebs_flex_rules.csv
+--     Flexfield security rule usages (existence check)
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    APPLICATION_ID,
+    RESPONSIBILITY_ID,
+    FLEX_VALUE_RULE_ID
+FROM FND_FLEX_VALUE_RULE_USAGES
+WHERE ROWNUM <= 100
+ORDER BY APPLICATION_ID;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 30. ebs_alerts.csv
+--     Oracle Alert definitions
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    ALERT_NAME,
+    ENABLED_FLAG,
+    ALERT_CONDITION_TYPE
+FROM ALR_ALERTS
+ORDER BY ALERT_NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 31. ebs_form_functions.csv
+--     Form function security (recent web functions)
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    FUNCTION_NAME,
+    TYPE,
+    TO_CHAR(CREATION_DATE, 'YYYY-MM-DD') AS CREATION_DATE,
+    CASE WHEN FUNCTION_ID IN (
+        SELECT FUNCTION_ID FROM FND_MENU_ENTRIES
+    ) THEN 'Y' ELSE 'N' END AS ATTACHED_TO_MENU
+FROM FND_FORM_FUNCTIONS
+WHERE TYPE = 'WWW'
+    AND CREATION_DATE > SYSDATE - 365
+ORDER BY CREATION_DATE DESC;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 32. ebs_dff_config.csv
+--     Descriptive flexfield configuration (PII tables)
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    APPLICATION_TABLE_NAME,
+    DESCRIPTIVE_FLEXFIELD_NAME,
+    PROTECTED_FLAG
+FROM FND_DESCRIPTIVE_FLEXS
+WHERE APPLICATION_TABLE_NAME IN (
+    'PER_ALL_PEOPLE_F','HZ_PARTIES','AP_SUPPLIERS',
+    'HR_ALL_ORGANIZATION_UNITS'
+)
+ORDER BY APPLICATION_TABLE_NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 33. ebs_xml_gateway.csv
+--     XML Gateway trading partners
+-- ────────────────────────────────────────────────────────────────────────────
+-- NOTE: Table may not exist if XML Gateway is not used. Skip on error.
+SELECT
+    TP_HEADER_ID,
+    PARTY_TYPE,
+    PARTY_SITE_ID
+FROM ECX_TP_HEADERS
+ORDER BY TP_HEADER_ID;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 34. ebs_irep_services.csv
+--     Integration Repository deployed services
+-- ────────────────────────────────────────────────────────────────────────────
+-- NOTE: Table may not exist on older EBS versions. Skip on error.
+SELECT
+    CLASS_NAME,
+    DEPLOYED_FLAG,
+    SCOPE_TYPE
+FROM FND_IREP_CLASSES
+WHERE DEPLOYED_FLAG = 'Y'
+ORDER BY CLASS_NAME;
 
 
 -- ============================================================================

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Oracle E-Business Suite Security Audit Scanner v1.0.0
+Oracle E-Business Suite Security Audit Scanner v1.2.0
 
-Connects to an Oracle EBS database and performs 68 security audit checks
+Connects to an Oracle EBS database and performs 125 security audit checks
 across user management, access controls, profile options, segregation
 of duties, database hardening, patching, and more.
 
@@ -33,7 +33,7 @@ except ImportError:
     )
     sys.exit(2)
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 VERSION = __version__
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -123,6 +123,35 @@ class OracleEBSScanner:
          "Can create users and process payments"),
         ("%Human Resource%","%Payable%",          "HR/AP",
          "Can maintain employees and process payments"),
+        # ── Phase 1 additions ────────────────────────────────────────
+        ("%Receivable%",    "%Cash Management%",  "AR/CM",
+         "Can create customer receipts and reconcile bank statements"),
+        ("%General Ledger%","%Journal%",          "GL/JE",
+         "Can create and post journal entries without independent review"),
+        ("%Purchasing%",    "%Receiving%",        "PO/RECV",
+         "Can create purchase orders and confirm receipt of goods"),
+        ("%Inventory%",     "%Inventory%Adjust%", "INV/ADJ",
+         "Can adjust inventory quantities and approve adjustments"),
+        ("%Fixed Asset%",   "%Fixed Asset%",      "FA/FA",
+         "Can add assets and retire or transfer them"),
+        ("%Cash Management%","%Cash Management%", "CM/RECON",
+         "Can enter bank statements and reconcile accounts"),
+        ("%Human Resource%","%Payroll%",          "HR/PAY",
+         "Can create employees and process payroll runs"),
+        ("%Payable%",       "%Supplier%",         "AP/VENDOR",
+         "Can create vendors and approve supplier payments"),
+        ("%Purchasing%",    "%Buyer%",            "PO/BUYER",
+         "Can act as buyer and approve own purchase orders"),
+        ("%General Ledger%","%Period%",           "GL/PERIOD",
+         "Can open/close accounting periods and post journals"),
+        ("%Payable%",       "%Hold%",             "AP/HOLD",
+         "Can place and release invoice holds and approve payments"),
+        ("%Order Management%","%Receivable%",     "OM/AR",
+         "Can enter sales orders and post receivable receipts"),
+        ("%Purchasing%",    "%General Ledger%",   "PO/GL",
+         "Can create purchasing commitments and post GL journals"),
+        ("%System Admin%",  "%General Ledger%",   "Admin/GL",
+         "Can administer system and post financial transactions"),
     ]
 
     # ── Critical tables that must have audit trail enabled ────────────
@@ -344,6 +373,7 @@ class OracleEBSScanner:
             ("Database Security",            self._check_database),
             ("Patching & Versions",          self._check_patching),
             ("Workflow & Approvals",         self._check_workflow),
+            ("Application Configuration",   self._check_app_config),
         ]
 
         for name, fn in groups:
@@ -539,6 +569,180 @@ class OracleEBSScanner:
             "Periodically review the user population to ensure it aligns "
             "with the actual workforce and licensed seat count.",
         ))
+
+        # ORA-USER-009  Self-service registration enabled without controls
+        val = self._get_profile_value("SELF_REGISTRATION_ENABLED")
+        if val and val.upper() == "Y":
+            approval = self._get_profile_value("SELF_REGISTRATION_APPROVAL")
+            if not approval or approval.upper() != "Y":
+                self._add(Finding(
+                    "ORA-USER-009",
+                    "Self-service registration enabled without approval",
+                    "User Security", "HIGH",
+                    "FND_PROFILE_OPTION_VALUES",
+                    f"SELF_REGISTRATION_ENABLED = Y, APPROVAL = {approval or 'NULL'}",
+                    "Self-service user registration is enabled without an "
+                    "approval workflow. Anyone can create an EBS account.",
+                    "Disable self-service registration or enable the approval "
+                    "workflow via SELF_REGISTRATION_APPROVAL = 'Y'.",
+                    "CWE-284",
+                ))
+            else:
+                self._pass("ORA-USER-009", "Self-service registration has approval")
+        else:
+            self._pass("ORA-USER-009", "Self-service registration disabled")
+
+        # ORA-USER-010  SSO / External authentication not configured
+        val = self._get_profile_value("APPS_SSO")
+        if not val or val.upper() == "LOCAL":
+            self._add(Finding(
+                "ORA-USER-010", "Single Sign-On not configured",
+                "User Security", "MEDIUM",
+                "FND_PROFILE_OPTION_VALUES",
+                f"APPS_SSO = {val or 'NULL'}",
+                "Oracle EBS is using local authentication instead of SSO/OAM. "
+                "Local auth lacks MFA support and centralised credential control.",
+                "Integrate Oracle Access Manager (OAM) or another SSO provider "
+                "to enable MFA and centralised identity management.",
+                "CWE-308",
+            ))
+        else:
+            self._pass("ORA-USER-010", "SSO/External authentication configured")
+
+        # ORA-USER-011  User accounts created recently without HR link
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_USER "
+            "WHERE (END_DATE IS NULL OR END_DATE > SYSDATE) "
+            "  AND CREATION_DATE > SYSDATE - 30 "
+            "  AND EMPLOYEE_ID IS NULL "
+            "  AND PERSON_PARTY_ID IS NULL "
+            "  AND USER_NAME NOT IN ("
+            "    'SYSADMIN','GUEST','AUTOINSTALL','ANONYMOUS',"
+            "    'IBEGUEST','INITIAL_SETUP','WIZARD')"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-USER-011",
+                "Recent accounts created without HR link",
+                "User Security", "MEDIUM",
+                "FND_USER",
+                f"New unlinked accounts (30d): {cnt}",
+                f"{cnt} user account(s) created in the last 30 days have no "
+                "link to an employee or person record, suggesting they may "
+                "have been created outside the normal provisioning process.",
+                "Review recently created accounts and ensure they follow the "
+                "approved user provisioning workflow with HR linkage.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-USER-011", "Recent accounts properly linked")
+
+        # ORA-USER-012  Password hash algorithm strength
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_USER "
+            "WHERE (END_DATE IS NULL OR END_DATE > SYSDATE) "
+            "  AND ENCRYPTED_USER_PASSWORD IS NOT NULL "
+            "  AND LENGTH(ENCRYPTED_USER_PASSWORD) < 40"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-USER-012", "Weak password hashes detected",
+                "User Security", "HIGH",
+                "FND_USER",
+                f"Weak hashes: {cnt} users",
+                f"{cnt} active user(s) appear to have passwords stored with "
+                "a legacy hash algorithm (short hash length).",
+                "Force password resets for affected users to upgrade to the "
+                "current hashing algorithm. Apply the latest EBS security patches.",
+                "CWE-916",
+            ))
+        else:
+            self._pass("ORA-USER-012", "Password hash lengths acceptable")
+
+        # ORA-USER-013  APPS schema direct login detection
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_LOGINS "
+            "WHERE START_TIME > SYSDATE - 30 "
+            "  AND LOGIN_TYPE = 'FORM' "
+            "  AND LOGIN_NAME = 'APPS'"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-USER-013", "Direct APPS schema login detected",
+                "User Security", "HIGH",
+                "FND_LOGINS",
+                f"APPS logins (30d): {cnt}",
+                f"{cnt} direct login(s) using the APPS database account "
+                "detected in the last 30 days. The APPS schema has full "
+                "access to all EBS data.",
+                "Restrict APPS schema access to application tier connections only. "
+                "Implement proxy authentication for developers needing DB access.",
+                "CWE-250",
+            ))
+        else:
+            self._pass("ORA-USER-013", "No direct APPS logins")
+
+        # ORA-USER-014  Users with SYSADMIN performing business transactions
+        rows = self._query(
+            "SELECT DISTINCT fu.USER_NAME "
+            "FROM FND_USER fu "
+            "JOIN FND_USER_RESP_GROUPS_DIRECT furg "
+            "  ON fu.USER_ID = furg.USER_ID "
+            "JOIN FND_RESPONSIBILITY_TL frt "
+            "  ON furg.RESPONSIBILITY_ID = frt.RESPONSIBILITY_ID "
+            "  AND furg.RESPONSIBILITY_APPLICATION_ID = frt.APPLICATION_ID "
+            "  AND frt.LANGUAGE = 'US' "
+            "WHERE (fu.END_DATE IS NULL OR fu.END_DATE > SYSDATE) "
+            "  AND (furg.END_DATE IS NULL OR furg.END_DATE > SYSDATE) "
+            "  AND frt.RESPONSIBILITY_NAME = 'System Administrator' "
+            "  AND fu.USER_ID IN ("
+            "    SELECT DISTINCT furg2.USER_ID "
+            "    FROM FND_USER_RESP_GROUPS_DIRECT furg2 "
+            "    JOIN FND_RESPONSIBILITY_TL frt2 "
+            "      ON furg2.RESPONSIBILITY_ID = frt2.RESPONSIBILITY_ID "
+            "      AND furg2.RESPONSIBILITY_APPLICATION_ID = frt2.APPLICATION_ID "
+            "      AND frt2.LANGUAGE = 'US' "
+            "    WHERE (furg2.END_DATE IS NULL OR furg2.END_DATE > SYSDATE) "
+            "      AND (frt2.RESPONSIBILITY_NAME LIKE '%Payable%' "
+            "        OR frt2.RESPONSIBILITY_NAME LIKE '%Receivable%' "
+            "        OR frt2.RESPONSIBILITY_NAME LIKE '%General Ledger%' "
+            "        OR frt2.RESPONSIBILITY_NAME LIKE '%Purchasing%') "
+            "  ) "
+            "ORDER BY fu.USER_NAME"
+        )
+        if rows:
+            names = ", ".join(r["USER_NAME"] for r in rows[:10])
+            self._add(Finding(
+                "ORA-USER-014",
+                "SysAdmin users with financial responsibilities",
+                "User Security", "HIGH",
+                "FND_USER_RESP_GROUPS_DIRECT",
+                f"SysAdmin + Finance ({len(rows)}): {names}",
+                f"{len(rows)} user(s) hold both System Administrator and "
+                "financial responsibilities. IT administrators should not "
+                "perform business transactions.",
+                "Remove financial responsibilities from IT admin accounts or "
+                "remove SysAdmin from users who need financial access.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-USER-014", "No SysAdmin users with financial roles")
+
+        # ORA-USER-015  Concurrent login limit not enforced
+        val = self._get_profile_value("CONCURRENT_LOGIN_LIMIT")
+        if not val or val == "0":
+            self._add(Finding(
+                "ORA-USER-015", "Concurrent login limit not enforced",
+                "User Security", "MEDIUM",
+                "FND_PROFILE_OPTION_VALUES",
+                f"CONCURRENT_LOGIN_LIMIT = {val or 'NULL'}",
+                "No limit on simultaneous logins per user account. Compromised "
+                "credentials can be used from multiple locations simultaneously.",
+                "Set CONCURRENT_LOGIN_LIMIT to restrict parallel sessions per user.",
+                "CWE-400",
+            ))
+        else:
+            self._pass("ORA-USER-015", "Concurrent login limit set")
 
     # ═════════════════════════════════════════════════════════════════
     # Check Group 2 — Password & Authentication  (ORA-PWD-001 .. 006)
@@ -1257,6 +1461,169 @@ class OracleEBSScanner:
         else:
             self._pass("ORA-CONC-004", "No privileged user program submissions")
 
+        # ORA-CONC-005  Shell script concurrent programs
+        rows = self._query(
+            "SELECT CONCURRENT_PROGRAM_NAME, USER_CONCURRENT_PROGRAM_NAME "
+            "FROM FND_CONCURRENT_PROGRAMS_TL fcpt "
+            "JOIN FND_CONCURRENT_PROGRAMS fcp "
+            "  ON fcpt.CONCURRENT_PROGRAM_ID = fcp.CONCURRENT_PROGRAM_ID "
+            "  AND fcpt.APPLICATION_ID = fcp.APPLICATION_ID "
+            "WHERE fcp.EXECUTION_METHOD_CODE IN ('H', 'K') "
+            "  AND fcp.ENABLED_FLAG = 'Y' "
+            "  AND fcpt.LANGUAGE = 'US' "
+            "ORDER BY fcp.CONCURRENT_PROGRAM_NAME"
+        )
+        if rows:
+            names = ", ".join(r["CONCURRENT_PROGRAM_NAME"] for r in rows[:10])
+            self._add(Finding(
+                "ORA-CONC-005",
+                "Shell/host execution concurrent programs",
+                "Concurrent Programs", "MEDIUM",
+                "FND_CONCURRENT_PROGRAMS",
+                f"Shell programs ({len(rows)}): {names}",
+                f"{len(rows)} concurrent program(s) execute shell scripts or "
+                "host commands on the application server. These can be used "
+                "for OS-level command injection.",
+                "Review each shell-based program for necessity. Restrict "
+                "access via request groups to authorized administrators only.",
+                "CWE-78",
+            ))
+        else:
+            self._pass("ORA-CONC-005", "No shell execution programs found")
+
+        # ORA-CONC-006  Programs accessing sensitive security tables
+        rows = self._query(
+            "SELECT DISTINCT fcp.CONCURRENT_PROGRAM_NAME, "
+            "  frg.REQUEST_GROUP_NAME "
+            "FROM FND_CONCURRENT_PROGRAMS fcp "
+            "JOIN FND_REQUEST_GROUP_UNITS frgu "
+            "  ON fcp.CONCURRENT_PROGRAM_ID = frgu.REQUEST_UNIT_ID "
+            "  AND fcp.APPLICATION_ID = frgu.UNIT_APPLICATION_ID "
+            "  AND frgu.REQUEST_UNIT_TYPE = 'P' "
+            "JOIN FND_REQUEST_GROUPS frg "
+            "  ON frgu.REQUEST_GROUP_ID = frg.REQUEST_GROUP_ID "
+            "  AND frgu.APPLICATION_ID = frg.APPLICATION_ID "
+            "WHERE fcp.CONCURRENT_PROGRAM_NAME IN ("
+            "  'FNDCPASS','FNDSLOAD','FNDSCARU','FNDLOAD') "
+            "  AND fcp.ENABLED_FLAG = 'Y' "
+            "ORDER BY fcp.CONCURRENT_PROGRAM_NAME"
+        )
+        if rows:
+            details = "; ".join(
+                f"{r['CONCURRENT_PROGRAM_NAME']} -> {r['REQUEST_GROUP_NAME']}"
+                for r in rows[:10]
+            )
+            self._add(Finding(
+                "ORA-CONC-006",
+                "Security-sensitive programs broadly accessible",
+                "Concurrent Programs", "HIGH",
+                "FND_REQUEST_GROUP_UNITS",
+                f"Sensitive program access: {details}",
+                "Programs that modify security configuration (FNDCPASS, "
+                "FNDSLOAD, FNDSCARU, FNDLOAD) are accessible through "
+                "multiple request groups.",
+                "Restrict these programs to the System Administrator "
+                "request group only.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-CONC-006", "Security programs properly restricted")
+
+        # ORA-CONC-007  Concurrent output file directory permissions
+        val = self._get_profile_value("APPLCSF")
+        val2 = self._get_profile_value("APPLOUT")
+        if val or val2:
+            self._add(Finding(
+                "ORA-CONC-007",
+                "Concurrent output directory configuration",
+                "Concurrent Programs", "INFO",
+                "FND_PROFILE_OPTION_VALUES",
+                f"APPLCSF = {val or 'NULL'}, APPLOUT = {val2 or 'NULL'}",
+                "Concurrent program output files may contain sensitive data. "
+                "Verify that output directories have restricted permissions.",
+                "Ensure concurrent output directories ($APPLCSF/$APPLOUT) "
+                "have permissions restricted to the applmgr user only (700).",
+            ))
+        else:
+            self._pass("ORA-CONC-007", "Output directory check skipped")
+
+        # ORA-CONC-008  FNDCPASS/FNDSCARU recent execution
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_CONCURRENT_REQUESTS fcr "
+            "JOIN FND_CONCURRENT_PROGRAMS fcp "
+            "  ON fcr.CONCURRENT_PROGRAM_ID = fcp.CONCURRENT_PROGRAM_ID "
+            "  AND fcr.PROGRAM_APPLICATION_ID = fcp.APPLICATION_ID "
+            "WHERE fcp.CONCURRENT_PROGRAM_NAME IN ('FNDCPASS','FNDSCARU') "
+            "  AND fcr.PHASE_CODE = 'C' "
+            "  AND fcr.ACTUAL_START_DATE > SYSDATE - 30"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-CONC-008",
+                "Security programs executed recently",
+                "Concurrent Programs", "MEDIUM",
+                "FND_CONCURRENT_REQUESTS",
+                f"FNDCPASS/FNDSCARU executions (30d): {cnt}",
+                f"{cnt} execution(s) of password change or user maintenance "
+                "programs detected in the last 30 days. These should be "
+                "reviewed for authorization.",
+                "Verify each execution was authorized and logged. Review "
+                "who submitted these requests and why.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-CONC-008", "No recent security program executions")
+
+        # ORA-CONC-009  Concurrent manager output file retention
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_CONCURRENT_REQUESTS "
+            "WHERE PHASE_CODE = 'C' "
+            "  AND ACTUAL_START_DATE < SYSDATE - 180 "
+            "  AND OUTFILE_NAME IS NOT NULL"
+        )
+        if cnt > 10000:
+            self._add(Finding(
+                "ORA-CONC-009",
+                "Old concurrent output files not purged",
+                "Concurrent Programs", "LOW",
+                "FND_CONCURRENT_REQUESTS",
+                f"Output files > 180 days: {cnt:,}",
+                f"{cnt:,} concurrent request output files older than 6 months "
+                "still exist. Old output files may contain sensitive data.",
+                "Schedule the 'Purge Concurrent Request and/or Manager Data' "
+                "program to clean up old output files.",
+                "CWE-532",
+            ))
+        else:
+            self._pass("ORA-CONC-009", "Output file retention acceptable")
+
+        # ORA-CONC-010  Request group with ALL concurrent programs
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_REQUEST_GROUP_UNITS "
+            "WHERE REQUEST_UNIT_TYPE = 'A' "
+            "  AND REQUEST_GROUP_ID IN ("
+            "    SELECT frg.REQUEST_GROUP_ID FROM FND_REQUEST_GROUPS frg "
+            "    JOIN FND_RESPONSIBILITY fr "
+            "      ON frg.REQUEST_GROUP_ID = fr.REQUEST_GROUP_ID "
+            "      AND frg.APPLICATION_ID = fr.GROUP_APPLICATION_ID "
+            "    WHERE fr.END_DATE IS NULL OR fr.END_DATE > SYSDATE)"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-CONC-010",
+                "Active responsibilities with ALL-program request groups",
+                "Concurrent Programs", "HIGH",
+                "FND_REQUEST_GROUP_UNITS",
+                f"Active ALL-program grants: {cnt}",
+                f"{cnt} active responsibility(ies) have request groups that "
+                "grant access to ALL concurrent programs in an application.",
+                "Replace ALL-program grants with explicit program-level "
+                "entries in request groups.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-CONC-010", "No active ALL-program request groups")
+
     # ═════════════════════════════════════════════════════════════════
     # Check Group 7 — Audit Trail  (ORA-AUDIT-001 .. 005)
     # ═════════════════════════════════════════════════════════════════
@@ -1281,7 +1648,7 @@ class OracleEBSScanner:
             self._pass("ORA-AUDIT-001", "Audit trail enabled")
 
         # ORA-AUDIT-002  Critical tables not in audit configuration
-        for app_short, table_name, description in self.CRITICAL_AUDIT_TABLES:
+        for _, table_name, description in self.CRITICAL_AUDIT_TABLES:
             cnt = self._count(
                 "SELECT COUNT(*) FROM FND_AUDIT_TABLES fat "
                 "JOIN FND_AUDIT_SCHEMAS fas "
@@ -1361,6 +1728,162 @@ class OracleEBSScanner:
             ))
         else:
             self._pass("ORA-AUDIT-005", "Audit data volume acceptable")
+
+        # ORA-AUDIT-006  Profile option change auditing
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_AUDIT_TABLES fat "
+            "JOIN FND_AUDIT_SCHEMAS fas "
+            "  ON fat.AUDIT_SCHEMA_ID = fas.AUDIT_SCHEMA_ID "
+            "WHERE fat.TABLE_NAME = 'FND_PROFILE_OPTION_VALUES' "
+            "  AND fas.STATE = 'E'"
+        )
+        if cnt == 0:
+            self._add(Finding(
+                "ORA-AUDIT-006",
+                "Profile option changes not audited",
+                "Audit Trail", "HIGH",
+                "FND_AUDIT_TABLES",
+                "FND_PROFILE_OPTION_VALUES not in active audit schema",
+                "Changes to security-critical profile options (passwords, "
+                "session timeouts, audit levels) are not being tracked.",
+                "Add FND_PROFILE_OPTION_VALUES to an audit group and enable.",
+                "CWE-778",
+            ))
+        else:
+            self._pass("ORA-AUDIT-006", "Profile option changes audited")
+
+        # ORA-AUDIT-007  Responsibility assignment changes not tracked
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_AUDIT_TABLES fat "
+            "JOIN FND_AUDIT_SCHEMAS fas "
+            "  ON fat.AUDIT_SCHEMA_ID = fas.AUDIT_SCHEMA_ID "
+            "WHERE fat.TABLE_NAME = 'FND_USER_RESP_GROUPS_DIRECT' "
+            "  AND fas.STATE = 'E'"
+        )
+        if cnt == 0:
+            self._add(Finding(
+                "ORA-AUDIT-007",
+                "Responsibility assignment changes not audited",
+                "Audit Trail", "HIGH",
+                "FND_AUDIT_TABLES",
+                "FND_USER_RESP_GROUPS_DIRECT not in active audit schema",
+                "Granting or revoking responsibilities is not tracked. "
+                "Unauthorized privilege escalation may go undetected.",
+                "Add FND_USER_RESP_GROUPS_DIRECT to an audit group.",
+                "CWE-778",
+            ))
+        else:
+            self._pass("ORA-AUDIT-007", "Responsibility changes audited")
+
+        # ORA-AUDIT-008  FND_USER modification audit
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_AUDIT_TABLES fat "
+            "JOIN FND_AUDIT_SCHEMAS fas "
+            "  ON fat.AUDIT_SCHEMA_ID = fas.AUDIT_SCHEMA_ID "
+            "WHERE fat.TABLE_NAME = 'FND_USER' "
+            "  AND fas.STATE = 'E'"
+        )
+        if cnt == 0:
+            self._add(Finding(
+                "ORA-AUDIT-008",
+                "User account changes not audited",
+                "Audit Trail", "HIGH",
+                "FND_AUDIT_TABLES",
+                "FND_USER not in active audit schema",
+                "Changes to user accounts (creation, password resets, "
+                "end-dating) are not being tracked in the audit trail.",
+                "Add FND_USER to an audit group and enable auditing.",
+                "CWE-778",
+            ))
+        else:
+            self._pass("ORA-AUDIT-008", "User account changes audited")
+
+        # ORA-AUDIT-009  Unified Audit policies (12c+)
+        cnt = self._count(
+            "SELECT COUNT(*) FROM AUDIT_UNIFIED_ENABLED_POLICIES"
+        )
+        if cnt == 0:
+            self._add(Finding(
+                "ORA-AUDIT-009",
+                "No Unified Audit policies enabled",
+                "Audit Trail", "MEDIUM",
+                "AUDIT_UNIFIED_ENABLED_POLICIES",
+                "Unified Audit policies: 0",
+                "No Unified Audit policies are enabled. Modern Oracle databases "
+                "(12c+) should use Unified Auditing for comprehensive coverage.",
+                "Enable Unified Auditing and configure policies for privilege use, "
+                "DDL, and login events.",
+                "CWE-778",
+            ))
+        else:
+            self._pass("ORA-AUDIT-009", f"Unified Audit policies active: {cnt}")
+
+        # ORA-AUDIT-010  Audit log retention compliance
+        # Check if any audit data older than 7 years exists (SOX max)
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_LOGINS "
+            "WHERE START_TIME < SYSDATE - 2555"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-AUDIT-010",
+                "Audit data exceeds 7-year retention",
+                "Audit Trail", "LOW",
+                "FND_LOGINS",
+                f"Records older than 7 years: {cnt:,}",
+                f"{cnt:,} audit records are older than 7 years. While SOX "
+                "requires 7-year retention, very old data should be archived "
+                "to maintain performance.",
+                "Archive audit data older than the retention period to "
+                "external storage. Purge from active tables.",
+            ))
+        else:
+            self._pass("ORA-AUDIT-010", "Audit data retention within bounds")
+
+        # ORA-AUDIT-011  Financial table WHO columns populated
+        # Check if critical financial tables have CREATED_BY/LAST_UPDATED_BY
+        cnt = self._count(
+            "SELECT COUNT(*) FROM AP_INVOICES_ALL "
+            "WHERE CREATED_BY IS NULL "
+            "  AND CREATION_DATE > SYSDATE - 90 "
+            "  AND ROWNUM <= 1"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-AUDIT-011",
+                "Financial records missing WHO column data",
+                "Audit Trail", "MEDIUM",
+                "AP_INVOICES_ALL",
+                "Records with NULL CREATED_BY found in last 90 days",
+                "Financial transaction records are missing WHO column data "
+                "(CREATED_BY, LAST_UPDATED_BY), preventing accountability.",
+                "Investigate why WHO columns are not populated. Ensure all "
+                "interfaces and APIs populate standard WHO columns.",
+                "CWE-778",
+            ))
+        else:
+            self._pass("ORA-AUDIT-011", "Financial WHO columns populated")
+
+        # ORA-AUDIT-012  Concurrent request history retention
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_CONCURRENT_REQUESTS "
+            "WHERE PHASE_CODE = 'C' "
+            "  AND ACTUAL_START_DATE < SYSDATE - 365"
+        )
+        if cnt > 500000:
+            self._add(Finding(
+                "ORA-AUDIT-012",
+                "Concurrent request history needs purging",
+                "Audit Trail", "LOW",
+                "FND_CONCURRENT_REQUESTS",
+                f"Completed requests > 1 year old: {cnt:,}",
+                f"{cnt:,} completed concurrent request records are older than "
+                "1 year. Excessive history impacts performance.",
+                "Run the 'Purge Concurrent Request and/or Manager Data' "
+                "program to archive old request history.",
+            ))
+        else:
+            self._pass("ORA-AUDIT-012", "Concurrent request history acceptable")
 
     # ═════════════════════════════════════════════════════════════════
     # Check Group 8 — Database Security  (ORA-DB-001 .. 010)
@@ -1625,6 +2148,186 @@ class OracleEBSScanner:
         else:
             self._pass("ORA-DB-010", "Could not check DEFAULT profile")
 
+        # ORA-DB-011  Network encryption not enforced
+        val = self._scalar(
+            "SELECT VALUE FROM V$PARAMETER "
+            "WHERE NAME = 'sqlnet.encryption_server'"
+        )
+        # Also check via sqlnet parameter table if v$parameter doesn't have it
+        if not val:
+            val = self._scalar(
+                "SELECT VALUE FROM V$PARAMETER "
+                "WHERE NAME LIKE '%encryption%' AND ROWNUM = 1"
+            )
+        if val and val.upper() in ("REQUIRED", "REQUESTED"):
+            self._pass("ORA-DB-011", "Network encryption configured")
+        else:
+            self._add(Finding(
+                "ORA-DB-011", "Network encryption not enforced",
+                "Database Security", "HIGH",
+                "V$PARAMETER",
+                f"sqlnet.encryption_server = {val or 'NOT SET'}",
+                "Database network encryption is not enforced. Data in transit "
+                "between application and database tiers may be intercepted.",
+                "Set SQLNET.ENCRYPTION_SERVER = REQUIRED in sqlnet.ora and "
+                "configure AES256 encryption algorithm.",
+                "CWE-319",
+            ))
+
+        # ORA-DB-012  O7_DICTIONARY_ACCESSIBILITY enabled
+        val = self._scalar(
+            "SELECT VALUE FROM V$PARAMETER "
+            "WHERE NAME = 'o7_dictionary_accessibility'"
+        )
+        if val and val.upper() == "TRUE":
+            self._add(Finding(
+                "ORA-DB-012", "O7_DICTIONARY_ACCESSIBILITY enabled",
+                "Database Security", "HIGH",
+                "V$PARAMETER",
+                f"o7_dictionary_accessibility = {val}",
+                "Users with SELECT ANY TABLE can read data dictionary tables "
+                "including password hashes and security configuration.",
+                "Set O7_DICTIONARY_ACCESSIBILITY to FALSE.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-DB-012", "O7_DICTIONARY_ACCESSIBILITY disabled")
+
+        # ORA-DB-013  SELECT ANY TABLE grants
+        rows = self._query(
+            "SELECT GRANTEE FROM DBA_SYS_PRIVS "
+            "WHERE PRIVILEGE = 'SELECT ANY TABLE' "
+            "  AND GRANTEE NOT IN ('SYS','SYSTEM','DBA','EXP_FULL_DATABASE',"
+            "    'IMP_FULL_DATABASE','DATAPUMP_EXP_FULL_DATABASE',"
+            "    'DATAPUMP_IMP_FULL_DATABASE','SELECT_CATALOG_ROLE') "
+            "ORDER BY GRANTEE"
+        )
+        if rows:
+            grantees = ", ".join(r["GRANTEE"] for r in rows[:10])
+            self._add(Finding(
+                "ORA-DB-013", "SELECT ANY TABLE grants detected",
+                "Database Security", "HIGH",
+                "DBA_SYS_PRIVS",
+                f"SELECT ANY TABLE grantees ({len(rows)}): {grantees}",
+                f"{len(rows)} non-default schema(s) have SELECT ANY TABLE, "
+                "granting read access to every table in the database.",
+                "Revoke SELECT ANY TABLE and grant SELECT on specific "
+                "required tables only.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-DB-013", "No unexpected SELECT ANY TABLE grants")
+
+        # ORA-DB-014  ALTER SYSTEM privilege grants
+        rows = self._query(
+            "SELECT GRANTEE FROM DBA_SYS_PRIVS "
+            "WHERE PRIVILEGE = 'ALTER SYSTEM' "
+            "  AND GRANTEE NOT IN ('SYS','SYSTEM','DBA') "
+            "ORDER BY GRANTEE"
+        )
+        if rows:
+            grantees = ", ".join(r["GRANTEE"] for r in rows[:10])
+            self._add(Finding(
+                "ORA-DB-014", "ALTER SYSTEM privilege grants",
+                "Database Security", "CRITICAL",
+                "DBA_SYS_PRIVS",
+                f"ALTER SYSTEM grantees: {grantees}",
+                f"{len(rows)} non-DBA schema(s) have ALTER SYSTEM, which can "
+                "change database parameters, flush caches, and kill sessions.",
+                "Revoke ALTER SYSTEM from non-DBA schemas immediately.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-DB-014", "No unexpected ALTER SYSTEM grants")
+
+        # ORA-DB-015  SYSDBA session audit
+        val = self._scalar(
+            "SELECT VALUE FROM V$PARAMETER "
+            "WHERE NAME = 'audit_sys_operations'"
+        )
+        if val and val.upper() == "FALSE":
+            self._add(Finding(
+                "ORA-DB-015", "SYSDBA session auditing disabled",
+                "Database Security", "HIGH",
+                "V$PARAMETER",
+                f"audit_sys_operations = {val}",
+                "Operations performed as SYSDBA/SYSOPER are not being audited. "
+                "Privileged DBA actions cannot be traced.",
+                "Set audit_sys_operations to TRUE and restart the database.",
+                "CWE-778",
+            ))
+        else:
+            self._pass("ORA-DB-015", "SYSDBA session auditing enabled")
+
+        # ORA-DB-016  Database listener security
+        # Check via V$LISTENER_NETWORK or detect via parameter
+        val = self._scalar(
+            "SELECT VALUE FROM V$PARAMETER "
+            "WHERE NAME = 'local_listener'"
+        )
+        # We can't directly query listener config from DB; check what we can
+        val2 = self._scalar(
+            "SELECT VALUE FROM V$PARAMETER "
+            "WHERE NAME = 'sec_max_failed_login_attempts'"
+        )
+        if val2 and val2 != "0":
+            self._pass("ORA-DB-016", "DB login rate limiting configured")
+        else:
+            self._add(Finding(
+                "ORA-DB-016",
+                "Database login rate limiting not configured",
+                "Database Security", "MEDIUM",
+                "V$PARAMETER",
+                f"sec_max_failed_login_attempts = {val2 or 'NOT SET'}",
+                "Database-level login rate limiting is not configured. "
+                "Brute-force attacks against database accounts are not throttled.",
+                "Set SEC_MAX_FAILED_LOGIN_ATTEMPTS to a value like 10.",
+                "CWE-307",
+            ))
+
+        # ORA-DB-017  Database Vault status check
+        rows = self._query(
+            "SELECT * FROM DBA_DV_STATUS WHERE ROWNUM = 1"
+        )
+        if rows:
+            dv_value = rows[0].get("STATUS", "")
+            if dv_value and dv_value.upper() == "TRUE":
+                self._pass("ORA-DB-017", "Database Vault enabled")
+            else:
+                self._add(Finding(
+                    "ORA-DB-017", "Database Vault not enabled",
+                    "Database Security", "MEDIUM",
+                    "DBA_DV_STATUS",
+                    f"Database Vault status: {dv_value or 'disabled'}",
+                    "Oracle Database Vault is not enabled. Privileged users "
+                    "(SYS, SYSTEM) can access application data in the APPS schema.",
+                    "Enable Database Vault to protect the APPS schema from "
+                    "privileged database user access.",
+                    "CWE-269",
+                ))
+        else:
+            self._vprint("  DBA_DV_STATUS not available (DB Vault not installed)")
+
+        # ORA-DB-018  Fine-Grained Auditing on sensitive columns
+        cnt = self._count(
+            "SELECT COUNT(*) FROM DBA_AUDIT_POLICIES "
+            "WHERE ENABLED = 'YES'"
+        )
+        if cnt == 0:
+            self._add(Finding(
+                "ORA-DB-018", "No Fine-Grained Audit policies enabled",
+                "Database Security", "MEDIUM",
+                "DBA_AUDIT_POLICIES",
+                "FGA policies enabled: 0",
+                "No Fine-Grained Auditing (FGA) policies are active. "
+                "Column-level access to PII and financial data is not tracked.",
+                "Create FGA policies for sensitive columns in PER_ALL_PEOPLE_F, "
+                "AP_CHECKS_ALL, FND_USER, and HZ_PARTIES.",
+                "CWE-778",
+            ))
+        else:
+            self._pass("ORA-DB-018", f"FGA policies active: {cnt}")
+
     # ═════════════════════════════════════════════════════════════════
     # Check Group 9 — Patching & Versions  (ORA-PATCH-001 .. 004)
     # ═════════════════════════════════════════════════════════════════
@@ -1884,6 +2587,404 @@ class OracleEBSScanner:
                 self._pass("ORA-WF-004", "Background engines running")
         else:
             self._vprint("  Could not query workflow engine status")
+
+    # ═════════════════════════════════════════════════════════════════
+    # Check Group 11 — Application Configuration  (ORA-APP-001 .. 015)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _check_app_config(self):
+
+        # ORA-APP-001  Document sequencing not enabled (SOX)
+        val = self._get_profile_value("UNIQUE:SEQ_NUMBERS")
+        if not val or val.upper() not in ("A", "P"):
+            self._add(Finding(
+                "ORA-APP-001",
+                "Document sequencing not enabled",
+                "Application Configuration", "HIGH",
+                "FND_PROFILE_OPTION_VALUES",
+                f"UNIQUE:SEQ_NUMBERS = {val or 'NULL'}",
+                "Document sequencing is not enabled. SOX compliance requires "
+                "sequential numbering for financial documents (invoices, "
+                "journals, payments) to detect gaps and missing transactions.",
+                "Set UNIQUE:SEQ_NUMBERS to 'A' (Always Used) at Site level "
+                "for SOX compliance.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-APP-001", "Document sequencing enabled")
+
+        # ORA-APP-002  Financial approval limits — users with unlimited
+        rows = self._query(
+            "SELECT DISTINCT fu.USER_NAME, aal.AMOUNT_LIMIT "
+            "FROM AP_APPROVAL_LIMITS aal "
+            "JOIN FND_USER fu ON aal.EMPLOYEE_ID = fu.EMPLOYEE_ID "
+            "WHERE (fu.END_DATE IS NULL OR fu.END_DATE > SYSDATE) "
+            "  AND aal.AMOUNT_LIMIT > 999999999 "
+            "ORDER BY fu.USER_NAME"
+        )
+        if rows:
+            names = ", ".join(r["USER_NAME"] for r in rows[:10])
+            self._add(Finding(
+                "ORA-APP-002",
+                "Users with unlimited financial approval limits",
+                "Application Configuration", "HIGH",
+                "AP_APPROVAL_LIMITS",
+                f"Unlimited approvers ({len(rows)}): {names}",
+                f"{len(rows)} user(s) have effectively unlimited approval "
+                "limits (>999M). This bypasses financial controls.",
+                "Set appropriate approval limits based on job role and "
+                "authorization matrix. No user should have unlimited limits.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-APP-002", "Approval limits within bounds")
+
+        # ORA-APP-003  Invoice holds not configured
+        cnt = self._count(
+            "SELECT COUNT(*) FROM AP_HOLD_CODES "
+            "WHERE HOLD_TYPE = 'SUPPLY' "
+            "  AND INACTIVE_DATE IS NULL"
+        )
+        if cnt == 0:
+            self._add(Finding(
+                "ORA-APP-003",
+                "No active AP invoice hold codes configured",
+                "Application Configuration", "MEDIUM",
+                "AP_HOLD_CODES",
+                "Active supply hold codes: 0",
+                "No active invoice hold codes are configured. Invoice holds "
+                "are a critical control for preventing unauthorized payments.",
+                "Configure appropriate hold codes and hold reasons for "
+                "invoice validation (matching, amount limits, etc.).",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-APP-003", f"Invoice hold codes active: {cnt}")
+
+        # ORA-APP-004  Period open/close access too broad
+        rows = self._query(
+            "SELECT DISTINCT fu.USER_NAME "
+            "FROM FND_USER fu "
+            "JOIN FND_USER_RESP_GROUPS_DIRECT furg "
+            "  ON fu.USER_ID = furg.USER_ID "
+            "JOIN FND_RESPONSIBILITY_TL frt "
+            "  ON furg.RESPONSIBILITY_ID = frt.RESPONSIBILITY_ID "
+            "  AND furg.RESPONSIBILITY_APPLICATION_ID = frt.APPLICATION_ID "
+            "  AND frt.LANGUAGE = 'US' "
+            "WHERE (fu.END_DATE IS NULL OR fu.END_DATE > SYSDATE) "
+            "  AND (furg.END_DATE IS NULL OR furg.END_DATE > SYSDATE) "
+            "  AND (frt.RESPONSIBILITY_NAME LIKE '%General Ledger%' "
+            "    OR frt.RESPONSIBILITY_NAME LIKE '%GL Super%') "
+            "ORDER BY fu.USER_NAME"
+        )
+        if len(rows) > 10:
+            names = ", ".join(r["USER_NAME"] for r in rows[:10])
+            self._add(Finding(
+                "ORA-APP-004",
+                "Too many users with GL period access",
+                "Application Configuration", "HIGH",
+                "FND_USER_RESP_GROUPS_DIRECT",
+                f"GL users ({len(rows)}): {names} ...",
+                f"{len(rows)} users have General Ledger responsibilities that "
+                "may include ability to open/close accounting periods. "
+                "Period control should be limited to designated controllers.",
+                "Restrict GL Super User and period-management functions to "
+                "designated financial controllers (2-3 max).",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-APP-004", "GL period access appropriately limited")
+
+        # ORA-APP-005  Lookup values not frozen
+        rows = self._query(
+            "SELECT LOOKUP_TYPE, COUNT(*) AS VAL_CNT "
+            "FROM FND_LOOKUP_VALUES "
+            "WHERE LOOKUP_TYPE IN ("
+            "  'YES_NO','APPROVAL STATUS','HOLD_STATUS',"
+            "  'PAYMENT METHOD','AP_HOLD_CODE','INVOICE TYPE',"
+            "  'CURRENCY_CODE','JOURNAL_TYPE')"
+            "  AND ENABLED_FLAG = 'Y' "
+            "  AND (END_DATE_ACTIVE IS NULL OR END_DATE_ACTIVE > SYSDATE) "
+            "GROUP BY LOOKUP_TYPE "
+            "ORDER BY LOOKUP_TYPE"
+        )
+        # Check if lookups are customizable (not frozen)
+        unfrozen = self._query(
+            "SELECT LOOKUP_TYPE FROM FND_LOOKUP_TYPES "
+            "WHERE LOOKUP_TYPE IN ("
+            "  'YES_NO','APPROVAL STATUS','HOLD_STATUS',"
+            "  'PAYMENT METHOD','AP_HOLD_CODE','INVOICE TYPE',"
+            "  'CURRENCY_CODE','JOURNAL_TYPE') "
+            "  AND CUSTOMIZATION_LEVEL = 'U'"
+        )
+        if unfrozen:
+            types = ", ".join(r["LOOKUP_TYPE"] for r in unfrozen[:8])
+            self._add(Finding(
+                "ORA-APP-005",
+                "Critical lookup types not frozen",
+                "Application Configuration", "MEDIUM",
+                "FND_LOOKUP_TYPES",
+                f"Unfrozen lookups: {types}",
+                f"{len(unfrozen)} critical lookup type(s) allow user-level "
+                "customization. Users could modify lookup values that affect "
+                "financial processing logic.",
+                "Set CUSTOMIZATION_LEVEL to 'S' (System) for critical "
+                "lookup types to prevent unauthorized modifications.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-APP-005", "Critical lookups properly restricted")
+
+        # ORA-APP-006  Flexfield security rules
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_FLEX_VALUE_RULE_USAGES "
+            "WHERE ROWNUM = 1"
+        )
+        if cnt == 0:
+            self._add(Finding(
+                "ORA-APP-006",
+                "No flexfield security rules defined",
+                "Application Configuration", "MEDIUM",
+                "FND_FLEX_VALUE_RULE_USAGES",
+                "Flexfield security rules: none",
+                "No flexfield value security rules are defined. Users with "
+                "GL access can post to any chart of accounts segment value.",
+                "Define flexfield security rules to restrict which cost "
+                "centers, accounts, and entities each responsibility can access.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-APP-006", "Flexfield security rules defined")
+
+        # ORA-APP-007  OAF personalization unrestricted
+        val = self._get_profile_value("FND_CUSTOM_OA_DEFINTION")
+        val2 = self._get_profile_value("PERSONALIZE_SELF_SERVICE_DEFN")
+        if (val and val.upper() == "Y") or (val2 and val2.upper() == "Y"):
+            self._add(Finding(
+                "ORA-APP-007",
+                "OA Framework personalization unrestricted",
+                "Application Configuration", "LOW",
+                "FND_PROFILE_OPTION_VALUES",
+                f"FND_CUSTOM_OA_DEFINTION={val or 'NULL'}, "
+                f"PERSONALIZE_SELF_SERVICE_DEFN={val2 or 'NULL'}",
+                "OA Framework personalization is enabled, allowing users to "
+                "modify page layouts and potentially expose hidden fields.",
+                "Set both FND_CUSTOM_OA_DEFINTION and "
+                "PERSONALIZE_SELF_SERVICE_DEFN to 'N' in production.",
+            ))
+        else:
+            self._pass("ORA-APP-007", "OAF personalization restricted")
+
+        # ORA-APP-008  Attachment storage directory
+        val = self._get_profile_value("FND_ATTACHMENT_STORAGE")
+        if val and val.upper() == "FILE":
+            self._add(Finding(
+                "ORA-APP-008",
+                "Attachments stored on file system",
+                "Application Configuration", "MEDIUM",
+                "FND_PROFILE_OPTION_VALUES",
+                f"FND_ATTACHMENT_STORAGE = {val}",
+                "Document attachments are stored on the file system rather "
+                "than in the database. File system storage requires proper "
+                "directory permissions to prevent unauthorized access.",
+                "Verify attachment directory permissions are restricted to "
+                "applmgr:dba (750). Consider DB storage for sensitive docs.",
+                "CWE-732",
+            ))
+        else:
+            self._pass("ORA-APP-008", "Attachment storage acceptable")
+
+        # ORA-APP-009  Alert configuration for security events
+        cnt = self._count(
+            "SELECT COUNT(*) FROM ALR_ALERTS "
+            "WHERE ENABLED_FLAG = 'Y' "
+            "  AND (UPPER(ALERT_NAME) LIKE '%SECURITY%' "
+            "    OR UPPER(ALERT_NAME) LIKE '%LOGIN%' "
+            "    OR UPPER(ALERT_NAME) LIKE '%PASSWORD%' "
+            "    OR UPPER(ALERT_NAME) LIKE '%SYSADMIN%')"
+        )
+        if cnt == 0:
+            self._add(Finding(
+                "ORA-APP-009",
+                "No security alerts configured",
+                "Application Configuration", "MEDIUM",
+                "ALR_ALERTS",
+                "Active security alerts: 0",
+                "No Oracle Alert rules are configured for security events "
+                "(failed logins, privilege changes, password resets). "
+                "Security incidents may go undetected.",
+                "Create Oracle Alerts for: failed login threshold, SYSADMIN "
+                "login, responsibility changes, and password resets.",
+                "CWE-778",
+            ))
+        else:
+            self._pass("ORA-APP-009", f"Security alerts configured: {cnt}")
+
+        # ORA-APP-010  Function security — unregistered functions
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_FORM_FUNCTIONS "
+            "WHERE TYPE = 'WWW' "
+            "  AND FUNCTION_NAME NOT IN ("
+            "    SELECT FUNCTION_ID FROM FND_MENU_ENTRIES) "
+            "  AND FUNCTION_NAME NOT LIKE 'FND%TEST%' "
+            "  AND CREATION_DATE > SYSDATE - 365"
+        )
+        if cnt > 20:
+            self._add(Finding(
+                "ORA-APP-010",
+                "Unregistered web functions detected",
+                "Application Configuration", "HIGH",
+                "FND_FORM_FUNCTIONS",
+                f"Unattached functions (recent): {cnt}",
+                f"{cnt} web-type form functions created in the last year are "
+                "not attached to any menu. They may be accessible via direct "
+                "URL if function security is not enforced.",
+                "Review unattached functions and either assign them to "
+                "appropriate menus or disable them.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-APP-010", "Function security coverage acceptable")
+
+        # ORA-APP-011  Multi-Org security not enforced
+        val = self._get_profile_value("XLA_MO_SECURITY_PROFILE_LEVEL")
+        val2 = self._get_profile_value("MO:SECURITY_PROFILE")
+        if not val2 and not val:
+            self._add(Finding(
+                "ORA-APP-011",
+                "Multi-Org security profile not configured",
+                "Application Configuration", "HIGH",
+                "FND_PROFILE_OPTION_VALUES",
+                f"MO:SECURITY_PROFILE = {val2 or 'NULL'}",
+                "Multi-Org security profile is not set. Users may be able to "
+                "access data across all operating units without restriction.",
+                "Configure MO:SECURITY_PROFILE at the responsibility level "
+                "to restrict data access by operating unit.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-APP-011", "Multi-Org security configured")
+
+        # ORA-APP-012  Descriptive flexfield PII exposure
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_DESCRIPTIVE_FLEXS "
+            "WHERE APPLICATION_TABLE_NAME IN ("
+            "  'PER_ALL_PEOPLE_F','HZ_PARTIES','AP_SUPPLIERS',"
+            "  'HR_ALL_ORGANIZATION_UNITS') "
+            "  AND PROTECTED_FLAG = 'N'"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-APP-012",
+                "Unprotected descriptive flexfields on PII tables",
+                "Application Configuration", "MEDIUM",
+                "FND_DESCRIPTIVE_FLEXS",
+                f"Unprotected DFFs on PII tables: {cnt}",
+                f"{cnt} descriptive flexfield(s) on tables containing personal "
+                "data are not protected. Sensitive data in DFF segments may "
+                "be accessible without proper authorization.",
+                "Set PROTECTED_FLAG = 'Y' for DFFs on PII-containing tables "
+                "and apply value set security rules.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-APP-012", "PII table DFFs protected")
+
+        # ORA-APP-013  Self-service modules exposed
+        ss_resps = self._query(
+            "SELECT DISTINCT frt.RESPONSIBILITY_NAME, "
+            "  COUNT(DISTINCT fu.USER_ID) AS USER_CNT "
+            "FROM FND_RESPONSIBILITY_TL frt "
+            "JOIN FND_USER_RESP_GROUPS_DIRECT furg "
+            "  ON frt.RESPONSIBILITY_ID = furg.RESPONSIBILITY_ID "
+            "  AND frt.APPLICATION_ID = furg.RESPONSIBILITY_APPLICATION_ID "
+            "JOIN FND_USER fu ON furg.USER_ID = fu.USER_ID "
+            "WHERE frt.LANGUAGE = 'US' "
+            "  AND (fu.END_DATE IS NULL OR fu.END_DATE > SYSDATE) "
+            "  AND (furg.END_DATE IS NULL OR furg.END_DATE > SYSDATE) "
+            "  AND (frt.RESPONSIBILITY_NAME LIKE '%iSupplier%' "
+            "    OR frt.RESPONSIBILITY_NAME LIKE '%iRecruitment%' "
+            "    OR frt.RESPONSIBILITY_NAME LIKE '%Self-Service%' "
+            "    OR frt.RESPONSIBILITY_NAME LIKE '%Internet Expenses%') "
+            "GROUP BY frt.RESPONSIBILITY_NAME "
+            "ORDER BY USER_CNT DESC"
+        )
+        if ss_resps:
+            details = "; ".join(
+                f"{r['RESPONSIBILITY_NAME']}({r['USER_CNT']})"
+                for r in ss_resps[:5]
+            )
+            self._add(Finding(
+                "ORA-APP-013",
+                "External self-service modules active",
+                "Application Configuration", "MEDIUM",
+                "FND_RESPONSIBILITY_TL",
+                f"Self-service resps: {details}",
+                f"{len(ss_resps)} external-facing self-service responsibility(ies) "
+                "are assigned to users. These modules expose EBS functionality "
+                "to external users (suppliers, candidates) and increase "
+                "attack surface.",
+                "Review self-service responsibility assignments. Ensure "
+                "external-facing modules are protected by SSO, MFA, and "
+                "regular security patching.",
+            ))
+        else:
+            self._pass("ORA-APP-013", "No external self-service modules active")
+
+        # ORA-APP-014  XML Gateway / Integration interfaces
+        cnt = self._count(
+            "SELECT COUNT(*) FROM ECX_TP_HEADERS "
+            "WHERE PARTY_TYPE = 'E'"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-APP-014",
+                "XML Gateway trading partners configured",
+                "Application Configuration", "MEDIUM",
+                "ECX_TP_HEADERS",
+                f"External trading partners: {cnt}",
+                f"{cnt} external trading partner(s) are configured in the XML "
+                "Gateway. External integrations are a common attack vector "
+                "for XXE and injection attacks.",
+                "Review XML Gateway trading partners. Ensure all interfaces "
+                "use encrypted transport (HTTPS/SFTP) and validate input XML.",
+                "CWE-611",
+            ))
+        else:
+            self._pass("ORA-APP-014", "No XML Gateway partners configured")
+
+        # ORA-APP-015  Integration Repository — exposed REST/SOAP services
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_IREP_CLASSES "
+            "WHERE DEPLOYED_FLAG = 'Y' "
+            "  AND SCOPE_TYPE = 'PUBLIC'"
+        )
+        if cnt > 50:
+            self._add(Finding(
+                "ORA-APP-015",
+                "Excessive public Integration Repository services",
+                "Application Configuration", "HIGH",
+                "FND_IREP_CLASSES",
+                f"Public deployed services: {cnt}",
+                f"{cnt} Integration Repository services are deployed as public. "
+                "Excessive public API exposure increases the attack surface.",
+                "Review deployed Integration Repository services. Undeploy "
+                "services that are not required. Set scope to PRIVATE for "
+                "internal-only APIs.",
+                "CWE-284",
+            ))
+        elif cnt > 0:
+            self._add(Finding(
+                "ORA-APP-015",
+                "Integration Repository services deployed",
+                "Application Configuration", "INFO",
+                "FND_IREP_CLASSES",
+                f"Public deployed services: {cnt}",
+                f"{cnt} Integration Repository service(s) are publicly deployed.",
+                "Periodically review deployed services for necessity.",
+            ))
+        else:
+            self._pass("ORA-APP-015", "No public IREP services deployed")
 
     # ═════════════════════════════════════════════════════════════════
     # Summary / Filter / Report
@@ -2170,7 +3271,7 @@ def main():
         description=(
             f"Oracle E-Business Suite Security Audit Scanner v{VERSION} — "
             "Comprehensive security audit via live database queries "
-            "(68 checks across 10 domains)"
+            "(125 checks across 11 domains)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\

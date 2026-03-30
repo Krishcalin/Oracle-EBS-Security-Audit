@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Oracle E-Business Suite Offline Security Audit Scanner v1.0.0
+Oracle E-Business Suite Offline Security Audit Scanner v1.2.0
 
 Analyzes CSV exports from Oracle EBS databases without requiring live
-database access.  Same 68 checks as the online scanner, zero dependencies.
+database access.  Same 125 checks as the online scanner, zero dependencies.
 
 Usage:
     1. Run the SQL queries in  export_ebs_audit_data.sql  against your EBS
@@ -23,7 +23,7 @@ import os
 import sys
 import textwrap
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 VERSION = __version__
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -52,6 +52,22 @@ CSV_FILES = [
     ("db_links.csv",                 False, "Database links"),
     ("db_profiles.csv",              False, "Database password profiles"),
     ("db_parameters.csv",            False, "Database init parameters"),
+    # Phase 1 additions
+    ("ebs_logins.csv",               False, "Recent EBS login records"),
+    ("db_sys_privs.csv",             False, "Database system privileges"),
+    ("db_dv_status.csv",             False, "Database Vault status"),
+    ("db_fga_policies.csv",          False, "Fine-Grained Audit policies"),
+    ("db_unified_audit.csv",         False, "Unified Audit policy list"),
+    # Phase 2 additions — Application Configuration
+    ("ebs_approval_limits.csv",      False, "AP approval limits per user"),
+    ("ebs_hold_codes.csv",           False, "AP invoice hold codes"),
+    ("ebs_lookup_types.csv",         False, "Lookup type customization levels"),
+    ("ebs_flex_rules.csv",           False, "Flexfield security rule usages"),
+    ("ebs_alerts.csv",               False, "Oracle Alert definitions"),
+    ("ebs_form_functions.csv",       False, "Form function security"),
+    ("ebs_dff_config.csv",           False, "Descriptive flexfield config"),
+    ("ebs_xml_gateway.csv",          False, "XML Gateway trading partners"),
+    ("ebs_irep_services.csv",        False, "Integration Repository services"),
 ]
 
 
@@ -136,6 +152,35 @@ class OracleEBSOfflineScanner:
          "Can create users and process payments"),
         ("Human Resource", "Payable",          "HR/AP",
          "Can maintain employees and process payments"),
+        # ── Phase 1 additions ────────────────────────────────────────
+        ("Receivable",     "Cash Management",  "AR/CM",
+         "Can create customer receipts and reconcile bank statements"),
+        ("General Ledger", "Journal",          "GL/JE",
+         "Can create and post journal entries without independent review"),
+        ("Purchasing",     "Receiving",        "PO/RECV",
+         "Can create purchase orders and confirm receipt of goods"),
+        ("Inventory",      "Adjust",           "INV/ADJ",
+         "Can adjust inventory quantities and approve adjustments"),
+        ("Fixed Asset",    "Fixed Asset",      "FA/FA",
+         "Can add assets and retire or transfer them"),
+        ("Cash Management","Cash Management",  "CM/RECON",
+         "Can enter bank statements and reconcile accounts"),
+        ("Human Resource", "Payroll",          "HR/PAY",
+         "Can create employees and process payroll runs"),
+        ("Payable",        "Supplier",         "AP/VENDOR",
+         "Can create vendors and approve supplier payments"),
+        ("Purchasing",     "Buyer",            "PO/BUYER",
+         "Can act as buyer and approve own purchase orders"),
+        ("General Ledger", "Period",           "GL/PERIOD",
+         "Can open/close accounting periods and post journals"),
+        ("Payable",        "Hold",             "AP/HOLD",
+         "Can place and release invoice holds and approve payments"),
+        ("Order Management","Receivable",      "OM/AR",
+         "Can enter sales orders and post receivable receipts"),
+        ("Purchasing",     "General Ledger",   "PO/GL",
+         "Can create purchasing commitments and post GL journals"),
+        ("System Admin",   "General Ledger",   "Admin/GL",
+         "Can administer system and post financial transactions"),
     ]
 
     CRITICAL_AUDIT_TABLES = [
@@ -330,6 +375,13 @@ class OracleEBSOfflineScanner:
             and self._is_active(r, "RESP_END_DATE")
         ]
 
+    def _safe_float(self, val):
+        """Parse a numeric string to float, returning 0 on failure."""
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return 0.0
+
     def _get_db_param(self, name):
         """Get database parameter value."""
         for row in self._data.get("db_parameters", []):
@@ -354,6 +406,7 @@ class OracleEBSOfflineScanner:
             ("Database Security",            self._check_database),
             ("Patching & Versions",          self._check_patching),
             ("Workflow & Approvals",         self._check_workflow),
+            ("Application Configuration",   self._check_app_config),
         ]
 
         for name, fn in groups:
@@ -527,6 +580,156 @@ class OracleEBSOfflineScanner:
             f"The EBS instance has {len(active_users)} active user accounts.",
             "Periodically review the user population.",
         ))
+
+        # ORA-USER-009  Self-service registration enabled without controls
+        val = self._get_profile_value("SELF_REGISTRATION_ENABLED")
+        if val and val.upper() == "Y":
+            approval = self._get_profile_value("SELF_REGISTRATION_APPROVAL")
+            if not approval or approval.upper() != "Y":
+                self._add(Finding(
+                    "ORA-USER-009",
+                    "Self-service registration enabled without approval",
+                    "User Security", "HIGH",
+                    "ebs_profile_options.csv",
+                    f"SELF_REGISTRATION_ENABLED = Y, APPROVAL = {approval or 'NULL'}",
+                    "Self-service user registration is enabled without an "
+                    "approval workflow.",
+                    "Disable self-service registration or enable the approval "
+                    "workflow.",
+                    "CWE-284",
+                ))
+            else:
+                self._pass("ORA-USER-009", "Self-service registration has approval")
+        else:
+            self._pass("ORA-USER-009", "Self-service registration disabled")
+
+        # ORA-USER-010  SSO / External authentication not configured
+        val = self._get_profile_value("APPS_SSO")
+        if not val or val.upper() == "LOCAL":
+            self._add(Finding(
+                "ORA-USER-010", "Single Sign-On not configured",
+                "User Security", "MEDIUM",
+                "ebs_profile_options.csv",
+                f"APPS_SSO = {val or 'NULL'}",
+                "Oracle EBS is using local authentication instead of SSO/OAM.",
+                "Integrate Oracle Access Manager or another SSO provider.",
+                "CWE-308",
+            ))
+        else:
+            self._pass("ORA-USER-010", "SSO/External authentication configured")
+
+        # ORA-USER-011  User accounts created recently without HR link
+        recent_unlinked = [
+            u for u in active_users
+            if (self._days_ago(u.get("CREATION_DATE", "")) or 999) <= 30
+            and not u.get("EMPLOYEE_ID")
+            and not u.get("PERSON_PARTY_ID")
+            and u.get("USER_NAME", "").upper() not in skip
+        ]
+        if recent_unlinked:
+            self._add(Finding(
+                "ORA-USER-011",
+                "Recent accounts created without HR link",
+                "User Security", "MEDIUM",
+                "ebs_users.csv",
+                f"New unlinked accounts (30d): {len(recent_unlinked)}",
+                f"{len(recent_unlinked)} user account(s) created in the last "
+                "30 days have no link to an employee or person record.",
+                "Review recently created accounts and ensure they follow "
+                "the approved provisioning workflow.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-USER-011", "Recent accounts properly linked")
+
+        # ORA-USER-012  Password hash algorithm strength
+        weak_hash = [
+            u for u in active_users
+            if u.get("ENCRYPTED_USER_PASSWORD")
+            and len(u.get("ENCRYPTED_USER_PASSWORD", "")) < 40
+        ]
+        if weak_hash:
+            self._add(Finding(
+                "ORA-USER-012", "Weak password hashes detected",
+                "User Security", "HIGH",
+                "ebs_users.csv",
+                f"Weak hashes: {len(weak_hash)} users",
+                f"{len(weak_hash)} active user(s) appear to have passwords "
+                "stored with a legacy hash algorithm.",
+                "Force password resets for affected users.",
+                "CWE-916",
+            ))
+        else:
+            self._pass("ORA-USER-012", "Password hash lengths acceptable")
+
+        # ORA-USER-013  Direct APPS schema login detection
+        # (requires ebs_logins.csv — skip if not available)
+        logins = self._data.get("ebs_logins", [])
+        apps_logins = [
+            l for l in logins
+            if l.get("LOGIN_NAME", "").upper() == "APPS"
+            and (self._days_ago(l.get("START_TIME", "")) or 999) <= 30
+        ]
+        if apps_logins:
+            self._add(Finding(
+                "ORA-USER-013", "Direct APPS schema login detected",
+                "User Security", "HIGH",
+                "ebs_logins.csv",
+                f"APPS logins (30d): {len(apps_logins)}",
+                f"{len(apps_logins)} direct login(s) using the APPS account "
+                "detected in the last 30 days.",
+                "Restrict APPS schema access to application tier only.",
+                "CWE-250",
+            ))
+        elif logins:
+            self._pass("ORA-USER-013", "No direct APPS logins")
+        else:
+            self._vprint("  ebs_logins.csv not available, skipping ORA-USER-013")
+
+        # ORA-USER-014  Users with SYSADMIN performing business transactions
+        active_resps = self._get_active_user_resps()
+        sysadmin_set = set(
+            r["USER_NAME"] for r in active_resps
+            if r.get("RESPONSIBILITY_NAME") == "System Administrator"
+        )
+        financial_keywords = ("Payable", "Receivable", "General Ledger",
+                              "Purchasing")
+        sysadmin_finance = set()
+        for r in active_resps:
+            if r["USER_NAME"] in sysadmin_set:
+                rname = r.get("RESPONSIBILITY_NAME", "")
+                if any(kw in rname for kw in financial_keywords):
+                    sysadmin_finance.add(r["USER_NAME"])
+        if sysadmin_finance:
+            names = ", ".join(sorted(sysadmin_finance)[:10])
+            self._add(Finding(
+                "ORA-USER-014",
+                "SysAdmin users with financial responsibilities",
+                "User Security", "HIGH",
+                "ebs_user_responsibilities.csv",
+                f"SysAdmin + Finance ({len(sysadmin_finance)}): {names}",
+                f"{len(sysadmin_finance)} user(s) hold both System Administrator "
+                "and financial responsibilities.",
+                "Separate IT admin and financial access.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-USER-014", "No SysAdmin users with financial roles")
+
+        # ORA-USER-015  Concurrent login limit not enforced
+        val = self._get_profile_value("CONCURRENT_LOGIN_LIMIT")
+        if not val or val == "0":
+            self._add(Finding(
+                "ORA-USER-015", "Concurrent login limit not enforced",
+                "User Security", "MEDIUM",
+                "ebs_profile_options.csv",
+                f"CONCURRENT_LOGIN_LIMIT = {val or 'NULL'}",
+                "No limit on simultaneous logins per user account.",
+                "Set CONCURRENT_LOGIN_LIMIT to restrict parallel sessions.",
+                "CWE-400",
+            ))
+        else:
+            self._pass("ORA-USER-015", "Concurrent login limit set")
 
     # ═════════════════════════════════════════════════════════════════
     # Check Group 2 — Password & Authentication  (ORA-PWD-001 .. 006)
@@ -1139,6 +1342,129 @@ class OracleEBSOfflineScanner:
         else:
             self._pass("ORA-CONC-004", "No privileged user submissions")
 
+        # ORA-CONC-005  Shell/host execution concurrent programs
+        shell_progs = [
+            p for p in programs
+            if p.get("EXECUTION_METHOD_CODE") in ("H", "K")
+            and p.get("ENABLED_FLAG") == "Y"
+        ]
+        if shell_progs:
+            names = ", ".join(
+                p["CONCURRENT_PROGRAM_NAME"] for p in shell_progs[:10]
+            )
+            self._add(Finding(
+                "ORA-CONC-005",
+                "Shell/host execution concurrent programs",
+                "Concurrent Programs", "MEDIUM",
+                "ebs_concurrent_programs.csv",
+                f"Shell programs ({len(shell_progs)}): {names}",
+                f"{len(shell_progs)} concurrent program(s) execute shell "
+                "scripts or host commands.",
+                "Review and restrict shell-based programs to admins only.",
+                "CWE-78",
+            ))
+        elif programs:
+            self._pass("ORA-CONC-005", "No shell execution programs found")
+
+        # ORA-CONC-006  Security-sensitive programs broadly accessible
+        sec_progs = {"FNDCPASS", "FNDSLOAD", "FNDSCARU", "FNDLOAD"}
+        sec_access = [
+            r for r in rga
+            if r.get("CONCURRENT_PROGRAM_NAME", "").upper() in sec_progs
+        ]
+        if sec_access:
+            details = "; ".join(
+                f"{r['CONCURRENT_PROGRAM_NAME']} -> {r.get('REQUEST_GROUP_NAME', '?')}"
+                for r in sec_access[:10]
+            )
+            self._add(Finding(
+                "ORA-CONC-006",
+                "Security-sensitive programs broadly accessible",
+                "Concurrent Programs", "HIGH",
+                "ebs_request_group_access.csv",
+                f"Sensitive program access: {details}",
+                "Security configuration programs are accessible through "
+                "multiple request groups.",
+                "Restrict to System Administrator request group only.",
+                "CWE-269",
+            ))
+        elif rga:
+            self._pass("ORA-CONC-006", "Security programs properly restricted")
+
+        # ORA-CONC-007  Concurrent output directory configuration
+        val = self._get_profile_value("APPLCSF")
+        val2 = self._get_profile_value("APPLOUT")
+        if val or val2:
+            self._add(Finding(
+                "ORA-CONC-007",
+                "Concurrent output directory configuration",
+                "Concurrent Programs", "INFO",
+                "ebs_profile_options.csv",
+                f"APPLCSF = {val or 'NULL'}, APPLOUT = {val2 or 'NULL'}",
+                "Verify that output directories have restricted permissions.",
+                "Ensure output directories have 700 permissions.",
+            ))
+
+        # ORA-CONC-008  FNDCPASS/FNDSCARU recent execution
+        sec_requests = [
+            r for r in requests
+            if r.get("CONCURRENT_PROGRAM_NAME", "").upper()
+               in ("FNDCPASS", "FNDSCARU")
+        ]
+        if sec_requests:
+            self._add(Finding(
+                "ORA-CONC-008",
+                "Security programs executed recently",
+                "Concurrent Programs", "MEDIUM",
+                "ebs_concurrent_requests.csv",
+                f"FNDCPASS/FNDSCARU executions: {len(sec_requests)}",
+                f"{len(sec_requests)} execution(s) of password/user programs "
+                "detected. Review for authorization.",
+                "Verify each execution was authorized.",
+                "CWE-269",
+            ))
+        elif requests:
+            self._pass("ORA-CONC-008", "No recent security program executions")
+
+        # ORA-CONC-009  Concurrent output file retention
+        old_outputs = [
+            r for r in requests
+            if (self._days_ago(r.get("ACTUAL_START_DATE", "")) or 0) > 180
+            and r.get("OUTFILE_NAME")
+        ]
+        if len(old_outputs) > 100:
+            self._add(Finding(
+                "ORA-CONC-009",
+                "Old concurrent output files not purged",
+                "Concurrent Programs", "LOW",
+                "ebs_concurrent_requests.csv",
+                f"Output files > 180 days: {len(old_outputs):,}",
+                f"{len(old_outputs):,} old output files still exist.",
+                "Schedule the Purge Concurrent Request program.",
+                "CWE-532",
+            ))
+        elif requests:
+            self._pass("ORA-CONC-009", "Output file retention acceptable")
+
+        # ORA-CONC-010  Request group with ALL concurrent programs
+        all_prog_grants = [
+            r for r in rga if r.get("REQUEST_UNIT_TYPE") == "A"
+        ]
+        if all_prog_grants:
+            self._add(Finding(
+                "ORA-CONC-010",
+                "Request groups with ALL-program access",
+                "Concurrent Programs", "HIGH",
+                "ebs_request_group_access.csv",
+                f"ALL-program grants: {len(all_prog_grants)}",
+                f"{len(all_prog_grants)} request group(s) grant access to ALL "
+                "concurrent programs.",
+                "Replace with explicit program-level entries.",
+                "CWE-269",
+            ))
+        elif rga:
+            self._pass("ORA-CONC-010", "No ALL-program request groups")
+
     # ═════════════════════════════════════════════════════════════════
     # Check Group 7 — Audit Trail  (ORA-AUDIT-001 .. 005)
     # ═════════════════════════════════════════════════════════════════
@@ -1232,6 +1558,114 @@ class OracleEBSOfflineScanner:
                 self._pass("ORA-AUDIT-005", "Could not parse audit data count")
         else:
             self._vprint("  ebs_login_audit_old.csv not available, skipping")
+
+        # ORA-AUDIT-006  Profile option change auditing
+        audit_config = self._data.get("ebs_audit_config", [])
+        prof_audited = any(
+            r.get("TABLE_NAME") == "FND_PROFILE_OPTION_VALUES"
+            and r.get("AUDIT_STATE", "").upper() == "E"
+            for r in audit_config
+        )
+        if audit_config and not prof_audited:
+            self._add(Finding(
+                "ORA-AUDIT-006",
+                "Profile option changes not audited",
+                "Audit Trail", "HIGH",
+                "ebs_audit_config.csv",
+                "FND_PROFILE_OPTION_VALUES not in active audit schema",
+                "Changes to security-critical profile options are not tracked.",
+                "Add FND_PROFILE_OPTION_VALUES to an audit group.",
+                "CWE-778",
+            ))
+        elif prof_audited:
+            self._pass("ORA-AUDIT-006", "Profile option changes audited")
+
+        # ORA-AUDIT-007  Responsibility assignment changes not tracked
+        resp_audited = any(
+            r.get("TABLE_NAME") == "FND_USER_RESP_GROUPS_DIRECT"
+            and r.get("AUDIT_STATE", "").upper() == "E"
+            for r in audit_config
+        )
+        if audit_config and not resp_audited:
+            self._add(Finding(
+                "ORA-AUDIT-007",
+                "Responsibility assignment changes not audited",
+                "Audit Trail", "HIGH",
+                "ebs_audit_config.csv",
+                "FND_USER_RESP_GROUPS_DIRECT not in active audit schema",
+                "Granting or revoking responsibilities is not tracked.",
+                "Add FND_USER_RESP_GROUPS_DIRECT to an audit group.",
+                "CWE-778",
+            ))
+        elif resp_audited:
+            self._pass("ORA-AUDIT-007", "Responsibility changes audited")
+
+        # ORA-AUDIT-008  FND_USER modification audit
+        user_audited = any(
+            r.get("TABLE_NAME") == "FND_USER"
+            and r.get("AUDIT_STATE", "").upper() == "E"
+            for r in audit_config
+        )
+        if audit_config and not user_audited:
+            self._add(Finding(
+                "ORA-AUDIT-008",
+                "User account changes not audited",
+                "Audit Trail", "HIGH",
+                "ebs_audit_config.csv",
+                "FND_USER not in active audit schema",
+                "Changes to user accounts are not tracked in the audit trail.",
+                "Add FND_USER to an audit group and enable auditing.",
+                "CWE-778",
+            ))
+        elif user_audited:
+            self._pass("ORA-AUDIT-008", "User account changes audited")
+
+        # ORA-AUDIT-009  Unified Audit policies (12c+)
+        unified_policies = self._data.get("db_unified_audit", [])
+        if unified_policies:
+            self._pass("ORA-AUDIT-009",
+                        f"Unified Audit policies: {len(unified_policies)}")
+        elif self._data.get("db_parameters"):
+            # Only flag if we have DB data but no unified audit
+            self._add(Finding(
+                "ORA-AUDIT-009",
+                "No Unified Audit policies enabled",
+                "Audit Trail", "MEDIUM",
+                "db_unified_audit.csv",
+                "Unified Audit policies: 0",
+                "No Unified Audit policies are enabled.",
+                "Enable Unified Auditing and configure policies.",
+                "CWE-778",
+            ))
+        else:
+            self._vprint("  db_unified_audit.csv not available, skipping")
+
+        # ORA-AUDIT-010  Audit log retention (skip in offline — age calc unreliable)
+        # Covered by ORA-AUDIT-005 which checks >1 year old records
+        self._vprint("  ORA-AUDIT-010: Retention check deferred to live scanner")
+
+        # ORA-AUDIT-011  Financial table WHO columns
+        # Cannot verify without actual table data; skip in offline mode
+        self._vprint("  ORA-AUDIT-011: WHO columns check requires live access")
+
+        # ORA-AUDIT-012  Concurrent request history retention
+        requests = self._data.get("ebs_concurrent_requests", [])
+        old_requests = [
+            r for r in requests
+            if (self._days_ago(r.get("ACTUAL_START_DATE", "")) or 0) > 365
+        ]
+        if len(old_requests) > 500:
+            self._add(Finding(
+                "ORA-AUDIT-012",
+                "Concurrent request history needs purging",
+                "Audit Trail", "LOW",
+                "ebs_concurrent_requests.csv",
+                f"Completed requests > 1 year old: {len(old_requests):,}",
+                f"{len(old_requests):,} old concurrent request records found.",
+                "Run the Purge Concurrent Request program.",
+            ))
+        elif requests:
+            self._pass("ORA-AUDIT-012", "Concurrent request history acceptable")
 
     # ═════════════════════════════════════════════════════════════════
     # Check Group 8 — Database Security  (ORA-DB-001 .. 010)
@@ -1465,6 +1899,154 @@ class OracleEBSOfflineScanner:
         else:
             self._vprint("  db_profiles.csv not available, skipping ORA-DB-010")
 
+        # ORA-DB-011  Network encryption not enforced
+        val = self._get_db_param("sqlnet.encryption_server")
+        if val and val.upper() in ("REQUIRED", "REQUESTED"):
+            self._pass("ORA-DB-011", "Network encryption configured")
+        elif self._data.get("db_parameters"):
+            self._add(Finding(
+                "ORA-DB-011", "Network encryption not enforced",
+                "Database Security", "HIGH",
+                "db_parameters.csv",
+                f"sqlnet.encryption_server = {val or 'NOT SET'}",
+                "Database network encryption is not enforced.",
+                "Set SQLNET.ENCRYPTION_SERVER = REQUIRED in sqlnet.ora.",
+                "CWE-319",
+            ))
+        else:
+            self._vprint("  db_parameters.csv not available, skipping ORA-DB-011")
+
+        # ORA-DB-012  O7_DICTIONARY_ACCESSIBILITY enabled
+        val = self._get_db_param("o7_dictionary_accessibility")
+        if val and val.upper() == "TRUE":
+            self._add(Finding(
+                "ORA-DB-012", "O7_DICTIONARY_ACCESSIBILITY enabled",
+                "Database Security", "HIGH",
+                "db_parameters.csv",
+                f"o7_dictionary_accessibility = {val}",
+                "Users with SELECT ANY TABLE can read data dictionary tables.",
+                "Set O7_DICTIONARY_ACCESSIBILITY to FALSE.",
+                "CWE-269",
+            ))
+        elif self._data.get("db_parameters"):
+            self._pass("ORA-DB-012", "O7_DICTIONARY_ACCESSIBILITY disabled")
+
+        # ORA-DB-013  SELECT ANY TABLE grants
+        db_sys_privs = self._data.get("db_sys_privs", [])
+        excluded_grantees = {
+            "SYS", "SYSTEM", "DBA", "EXP_FULL_DATABASE",
+            "IMP_FULL_DATABASE", "DATAPUMP_EXP_FULL_DATABASE",
+            "DATAPUMP_IMP_FULL_DATABASE", "SELECT_CATALOG_ROLE",
+        }
+        sat_grants = [
+            r for r in db_sys_privs
+            if r.get("PRIVILEGE", "").upper() == "SELECT ANY TABLE"
+            and r.get("GRANTEE", "").upper() not in excluded_grantees
+        ]
+        if sat_grants:
+            grantees = ", ".join(r["GRANTEE"] for r in sat_grants[:10])
+            self._add(Finding(
+                "ORA-DB-013", "SELECT ANY TABLE grants detected",
+                "Database Security", "HIGH",
+                "db_sys_privs.csv",
+                f"SELECT ANY TABLE grantees ({len(sat_grants)}): {grantees}",
+                f"{len(sat_grants)} non-default schema(s) have SELECT ANY TABLE.",
+                "Revoke and grant SELECT on specific tables only.",
+                "CWE-269",
+            ))
+        elif db_sys_privs:
+            self._pass("ORA-DB-013", "No unexpected SELECT ANY TABLE grants")
+        else:
+            self._vprint("  db_sys_privs.csv not available, skipping ORA-DB-013")
+
+        # ORA-DB-014  ALTER SYSTEM privilege grants
+        alt_sys = [
+            r for r in db_sys_privs
+            if r.get("PRIVILEGE", "").upper() == "ALTER SYSTEM"
+            and r.get("GRANTEE", "").upper() not in ("SYS", "SYSTEM", "DBA")
+        ]
+        if alt_sys:
+            grantees = ", ".join(r["GRANTEE"] for r in alt_sys[:10])
+            self._add(Finding(
+                "ORA-DB-014", "ALTER SYSTEM privilege grants",
+                "Database Security", "CRITICAL",
+                "db_sys_privs.csv",
+                f"ALTER SYSTEM grantees: {grantees}",
+                f"{len(alt_sys)} non-DBA schema(s) have ALTER SYSTEM.",
+                "Revoke ALTER SYSTEM from non-DBA schemas.",
+                "CWE-269",
+            ))
+        elif db_sys_privs:
+            self._pass("ORA-DB-014", "No unexpected ALTER SYSTEM grants")
+
+        # ORA-DB-015  SYSDBA session audit
+        val = self._get_db_param("audit_sys_operations")
+        if val and val.upper() == "FALSE":
+            self._add(Finding(
+                "ORA-DB-015", "SYSDBA session auditing disabled",
+                "Database Security", "HIGH",
+                "db_parameters.csv",
+                f"audit_sys_operations = {val}",
+                "SYSDBA/SYSOPER operations are not being audited.",
+                "Set audit_sys_operations to TRUE.",
+                "CWE-778",
+            ))
+        elif self._data.get("db_parameters"):
+            self._pass("ORA-DB-015", "SYSDBA session auditing enabled")
+
+        # ORA-DB-016  Database login rate limiting
+        val = self._get_db_param("sec_max_failed_login_attempts")
+        if val and val != "0":
+            self._pass("ORA-DB-016", "DB login rate limiting configured")
+        elif self._data.get("db_parameters"):
+            self._add(Finding(
+                "ORA-DB-016",
+                "Database login rate limiting not configured",
+                "Database Security", "MEDIUM",
+                "db_parameters.csv",
+                f"sec_max_failed_login_attempts = {val or 'NOT SET'}",
+                "Database-level login rate limiting is not configured.",
+                "Set SEC_MAX_FAILED_LOGIN_ATTEMPTS to a value like 10.",
+                "CWE-307",
+            ))
+
+        # ORA-DB-017  Database Vault status
+        db_dv_status = self._data.get("db_dv_status", [])
+        if db_dv_status:
+            dv_val = db_dv_status[0].get("STATUS", "")
+            if dv_val and dv_val.upper() == "TRUE":
+                self._pass("ORA-DB-017", "Database Vault enabled")
+            else:
+                self._add(Finding(
+                    "ORA-DB-017", "Database Vault not enabled",
+                    "Database Security", "MEDIUM",
+                    "db_dv_status.csv",
+                    f"Database Vault status: {dv_val or 'disabled'}",
+                    "Oracle Database Vault is not enabled.",
+                    "Enable Database Vault to protect the APPS schema.",
+                    "CWE-269",
+                ))
+        else:
+            self._vprint("  db_dv_status.csv not available, skipping ORA-DB-017")
+
+        # ORA-DB-018  Fine-Grained Auditing policies
+        db_fga = self._data.get("db_fga_policies", [])
+        enabled_fga = [r for r in db_fga if r.get("ENABLED", "").upper() == "YES"]
+        if db_fga and not enabled_fga:
+            self._add(Finding(
+                "ORA-DB-018", "No Fine-Grained Audit policies enabled",
+                "Database Security", "MEDIUM",
+                "db_fga_policies.csv",
+                "FGA policies enabled: 0",
+                "No Fine-Grained Auditing policies are active.",
+                "Create FGA policies for PII and financial columns.",
+                "CWE-778",
+            ))
+        elif enabled_fga:
+            self._pass("ORA-DB-018", f"FGA policies active: {len(enabled_fga)}")
+        else:
+            self._vprint("  db_fga_policies.csv not available, skipping ORA-DB-018")
+
     # ═════════════════════════════════════════════════════════════════
     # Check Group 9 — Patching & Versions  (ORA-PATCH-001 .. 004)
     # ═════════════════════════════════════════════════════════════════
@@ -1688,6 +2270,354 @@ class OracleEBSOfflineScanner:
             ))
         elif agents:
             self._pass("ORA-WF-004", "Background engines running")
+
+    # ═════════════════════════════════════════════════════════════════
+    # Check Group 11 — Application Configuration  (ORA-APP-001 .. 015)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _check_app_config(self):
+        active_resps = self._get_active_user_resps()
+
+        # ORA-APP-001  Document sequencing not enabled (SOX)
+        val = self._get_profile_value("UNIQUE:SEQ_NUMBERS")
+        if not val or val.upper() not in ("A", "P"):
+            self._add(Finding(
+                "ORA-APP-001",
+                "Document sequencing not enabled",
+                "Application Configuration", "HIGH",
+                "ebs_profile_options.csv",
+                f"UNIQUE:SEQ_NUMBERS = {val or 'NULL'}",
+                "Document sequencing is not enabled. SOX requires sequential "
+                "numbering for financial documents.",
+                "Set UNIQUE:SEQ_NUMBERS to 'A' (Always Used) at Site level.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-APP-001", "Document sequencing enabled")
+
+        # ORA-APP-002  Financial approval limits
+        approval_limits = self._data.get("ebs_approval_limits", [])
+        unlimited = [
+            r for r in approval_limits
+            if r.get("AMOUNT_LIMIT")
+            and self._safe_float(r["AMOUNT_LIMIT"]) > 999999999
+        ]
+        if unlimited:
+            names = ", ".join(
+                r.get("USER_NAME", "?") for r in unlimited[:10]
+            )
+            self._add(Finding(
+                "ORA-APP-002",
+                "Users with unlimited financial approval limits",
+                "Application Configuration", "HIGH",
+                "ebs_approval_limits.csv",
+                f"Unlimited approvers ({len(unlimited)}): {names}",
+                f"{len(unlimited)} user(s) have effectively unlimited "
+                "approval limits.",
+                "Set appropriate limits based on job role.",
+                "CWE-269",
+            ))
+        elif approval_limits:
+            self._pass("ORA-APP-002", "Approval limits within bounds")
+        else:
+            self._vprint("  ebs_approval_limits.csv not available, skipping")
+
+        # ORA-APP-003  Invoice holds not configured
+        hold_codes = self._data.get("ebs_hold_codes", [])
+        active_holds = [
+            h for h in hold_codes
+            if h.get("HOLD_TYPE") == "SUPPLY"
+            and self._is_active(h, "INACTIVE_DATE")
+        ]
+        if hold_codes and not active_holds:
+            self._add(Finding(
+                "ORA-APP-003",
+                "No active AP invoice hold codes configured",
+                "Application Configuration", "MEDIUM",
+                "ebs_hold_codes.csv",
+                "Active supply hold codes: 0",
+                "No active invoice hold codes are configured.",
+                "Configure hold codes for invoice validation.",
+                "CWE-284",
+            ))
+        elif active_holds:
+            self._pass("ORA-APP-003", f"Invoice hold codes active: {len(active_holds)}")
+        else:
+            self._vprint("  ebs_hold_codes.csv not available, skipping")
+
+        # ORA-APP-004  Period open/close access too broad
+        gl_users = set()
+        for r in active_resps:
+            rname = r.get("RESPONSIBILITY_NAME", "")
+            if "General Ledger" in rname or "GL Super" in rname:
+                gl_users.add(r["USER_NAME"])
+        if len(gl_users) > 10:
+            names = ", ".join(sorted(gl_users)[:10])
+            self._add(Finding(
+                "ORA-APP-004",
+                "Too many users with GL period access",
+                "Application Configuration", "HIGH",
+                "ebs_user_responsibilities.csv",
+                f"GL users ({len(gl_users)}): {names} ...",
+                f"{len(gl_users)} users have GL responsibilities.",
+                "Restrict to designated financial controllers.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-APP-004", "GL period access appropriately limited")
+
+        # ORA-APP-005  Lookup values not frozen
+        lookup_types = self._data.get("ebs_lookup_types", [])
+        critical_lookups = {
+            "YES_NO", "APPROVAL STATUS", "HOLD_STATUS",
+            "PAYMENT METHOD", "AP_HOLD_CODE", "INVOICE TYPE",
+            "CURRENCY_CODE", "JOURNAL_TYPE",
+        }
+        unfrozen = [
+            r for r in lookup_types
+            if r.get("LOOKUP_TYPE", "").upper() in critical_lookups
+            and r.get("CUSTOMIZATION_LEVEL", "").upper() == "U"
+        ]
+        if unfrozen:
+            types = ", ".join(r["LOOKUP_TYPE"] for r in unfrozen[:8])
+            self._add(Finding(
+                "ORA-APP-005",
+                "Critical lookup types not frozen",
+                "Application Configuration", "MEDIUM",
+                "ebs_lookup_types.csv",
+                f"Unfrozen lookups: {types}",
+                f"{len(unfrozen)} critical lookup type(s) allow user-level "
+                "customization.",
+                "Set CUSTOMIZATION_LEVEL to 'S' (System).",
+                "CWE-284",
+            ))
+        elif lookup_types:
+            self._pass("ORA-APP-005", "Critical lookups properly restricted")
+        else:
+            self._vprint("  ebs_lookup_types.csv not available, skipping")
+
+        # ORA-APP-006  Flexfield security rules
+        flex_rules = self._data.get("ebs_flex_rules", [])
+        if self._data.get("ebs_flex_rules") is not None and not flex_rules:
+            self._add(Finding(
+                "ORA-APP-006",
+                "No flexfield security rules defined",
+                "Application Configuration", "MEDIUM",
+                "ebs_flex_rules.csv",
+                "Flexfield security rules: none",
+                "No flexfield value security rules are defined.",
+                "Define rules to restrict cost center/account access.",
+                "CWE-269",
+            ))
+        elif flex_rules:
+            self._pass("ORA-APP-006", f"Flexfield rules: {len(flex_rules)}")
+        else:
+            self._vprint("  ebs_flex_rules.csv not available, skipping")
+
+        # ORA-APP-007  OAF personalization unrestricted
+        val = self._get_profile_value("FND_CUSTOM_OA_DEFINTION")
+        val2 = self._get_profile_value("PERSONALIZE_SELF_SERVICE_DEFN")
+        if (val and val.upper() == "Y") or (val2 and val2.upper() == "Y"):
+            self._add(Finding(
+                "ORA-APP-007",
+                "OA Framework personalization unrestricted",
+                "Application Configuration", "LOW",
+                "ebs_profile_options.csv",
+                f"FND_CUSTOM_OA_DEFINTION={val or 'NULL'}, "
+                f"PERSONALIZE_SELF_SERVICE_DEFN={val2 or 'NULL'}",
+                "OA Framework personalization is enabled.",
+                "Set both to 'N' in production.",
+            ))
+        else:
+            self._pass("ORA-APP-007", "OAF personalization restricted")
+
+        # ORA-APP-008  Attachment storage directory
+        val = self._get_profile_value("FND_ATTACHMENT_STORAGE")
+        if val and val.upper() == "FILE":
+            self._add(Finding(
+                "ORA-APP-008",
+                "Attachments stored on file system",
+                "Application Configuration", "MEDIUM",
+                "ebs_profile_options.csv",
+                f"FND_ATTACHMENT_STORAGE = {val}",
+                "Attachments are stored on the file system.",
+                "Verify directory permissions are restricted (750).",
+                "CWE-732",
+            ))
+        else:
+            self._pass("ORA-APP-008", "Attachment storage acceptable")
+
+        # ORA-APP-009  Alert configuration for security events
+        alerts = self._data.get("ebs_alerts", [])
+        sec_alerts = [
+            a for a in alerts
+            if a.get("ENABLED_FLAG") == "Y"
+            and any(kw in a.get("ALERT_NAME", "").upper()
+                    for kw in ("SECURITY", "LOGIN", "PASSWORD", "SYSADMIN"))
+        ]
+        if alerts and not sec_alerts:
+            self._add(Finding(
+                "ORA-APP-009",
+                "No security alerts configured",
+                "Application Configuration", "MEDIUM",
+                "ebs_alerts.csv",
+                "Active security alerts: 0",
+                "No alert rules are configured for security events.",
+                "Create alerts for failed logins, privilege changes, etc.",
+                "CWE-778",
+            ))
+        elif sec_alerts:
+            self._pass("ORA-APP-009", f"Security alerts: {len(sec_alerts)}")
+        else:
+            self._vprint("  ebs_alerts.csv not available, skipping")
+
+        # ORA-APP-010  Function security — unregistered functions
+        functions = self._data.get("ebs_form_functions", [])
+        unattached = [
+            f for f in functions
+            if f.get("TYPE") == "WWW"
+            and f.get("ATTACHED_TO_MENU", "").upper() == "N"
+            and (self._days_ago(f.get("CREATION_DATE", "")) or 999) <= 365
+        ]
+        if len(unattached) > 20:
+            self._add(Finding(
+                "ORA-APP-010",
+                "Unregistered web functions detected",
+                "Application Configuration", "HIGH",
+                "ebs_form_functions.csv",
+                f"Unattached functions (recent): {len(unattached)}",
+                f"{len(unattached)} recent web functions not on any menu.",
+                "Review and disable unattached functions.",
+                "CWE-284",
+            ))
+        elif functions:
+            self._pass("ORA-APP-010", "Function security acceptable")
+        else:
+            self._vprint("  ebs_form_functions.csv not available, skipping")
+
+        # ORA-APP-011  Multi-Org security not enforced
+        val = self._get_profile_value("MO:SECURITY_PROFILE")
+        val2 = self._get_profile_value("XLA_MO_SECURITY_PROFILE_LEVEL")
+        if not val and not val2:
+            self._add(Finding(
+                "ORA-APP-011",
+                "Multi-Org security profile not configured",
+                "Application Configuration", "HIGH",
+                "ebs_profile_options.csv",
+                f"MO:SECURITY_PROFILE = {val or 'NULL'}",
+                "Multi-Org security not set. Users may access all org data.",
+                "Configure MO:SECURITY_PROFILE per responsibility.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-APP-011", "Multi-Org security configured")
+
+        # ORA-APP-012  Descriptive flexfield PII exposure
+        dff_config = self._data.get("ebs_dff_config", [])
+        pii_tables = {
+            "PER_ALL_PEOPLE_F", "HZ_PARTIES", "AP_SUPPLIERS",
+            "HR_ALL_ORGANIZATION_UNITS",
+        }
+        unprotected = [
+            d for d in dff_config
+            if d.get("APPLICATION_TABLE_NAME", "").upper() in pii_tables
+            and d.get("PROTECTED_FLAG", "").upper() == "N"
+        ]
+        if unprotected:
+            self._add(Finding(
+                "ORA-APP-012",
+                "Unprotected DFFs on PII tables",
+                "Application Configuration", "MEDIUM",
+                "ebs_dff_config.csv",
+                f"Unprotected DFFs on PII tables: {len(unprotected)}",
+                f"{len(unprotected)} DFF(s) on PII tables are not protected.",
+                "Set PROTECTED_FLAG = 'Y' for DFFs on PII tables.",
+                "CWE-284",
+            ))
+        elif dff_config:
+            self._pass("ORA-APP-012", "PII table DFFs protected")
+        else:
+            self._vprint("  ebs_dff_config.csv not available, skipping")
+
+        # ORA-APP-013  Self-service modules exposed
+        ss_keywords = ("iSupplier", "iRecruitment", "Self-Service",
+                       "Internet Expenses")
+        ss_resps = {}
+        for r in active_resps:
+            rname = r.get("RESPONSIBILITY_NAME", "")
+            if any(kw in rname for kw in ss_keywords):
+                ss_resps.setdefault(rname, set()).add(r["USER_NAME"])
+        if ss_resps:
+            details = "; ".join(
+                f"{k}({len(v)})" for k, v in
+                sorted(ss_resps.items(), key=lambda x: -len(x[1]))[:5]
+            )
+            self._add(Finding(
+                "ORA-APP-013",
+                "External self-service modules active",
+                "Application Configuration", "MEDIUM",
+                "ebs_user_responsibilities.csv",
+                f"Self-service resps: {details}",
+                f"{len(ss_resps)} external-facing self-service resp(s) active.",
+                "Review assignments; ensure SSO/MFA protection.",
+            ))
+        else:
+            self._pass("ORA-APP-013", "No external self-service modules")
+
+        # ORA-APP-014  XML Gateway trading partners
+        xml_tp = self._data.get("ebs_xml_gateway", [])
+        external_tp = [
+            t for t in xml_tp
+            if t.get("PARTY_TYPE", "").upper() == "E"
+        ]
+        if external_tp:
+            self._add(Finding(
+                "ORA-APP-014",
+                "XML Gateway trading partners configured",
+                "Application Configuration", "MEDIUM",
+                "ebs_xml_gateway.csv",
+                f"External trading partners: {len(external_tp)}",
+                f"{len(external_tp)} external trading partner(s) configured.",
+                "Review partners; ensure encrypted transport and input validation.",
+                "CWE-611",
+            ))
+        elif xml_tp:
+            self._pass("ORA-APP-014", "No external XML Gateway partners")
+        else:
+            self._vprint("  ebs_xml_gateway.csv not available, skipping")
+
+        # ORA-APP-015  Integration Repository services
+        irep = self._data.get("ebs_irep_services", [])
+        public_svcs = [
+            s for s in irep
+            if s.get("DEPLOYED_FLAG", "").upper() == "Y"
+            and s.get("SCOPE_TYPE", "").upper() == "PUBLIC"
+        ]
+        if len(public_svcs) > 50:
+            self._add(Finding(
+                "ORA-APP-015",
+                "Excessive public Integration Repository services",
+                "Application Configuration", "HIGH",
+                "ebs_irep_services.csv",
+                f"Public deployed services: {len(public_svcs)}",
+                f"{len(public_svcs)} IREP services are publicly deployed.",
+                "Undeploy unnecessary services; set scope to PRIVATE.",
+                "CWE-284",
+            ))
+        elif public_svcs:
+            self._add(Finding(
+                "ORA-APP-015",
+                "Integration Repository services deployed",
+                "Application Configuration", "INFO",
+                "ebs_irep_services.csv",
+                f"Public deployed services: {len(public_svcs)}",
+                f"{len(public_svcs)} IREP service(s) are publicly deployed.",
+                "Periodically review deployed services.",
+            ))
+        elif irep:
+            self._pass("ORA-APP-015", "No public IREP services")
+        else:
+            self._vprint("  ebs_irep_services.csv not available, skipping")
 
     # ═════════════════════════════════════════════════════════════════
     # Summary / Filter / Report
@@ -1974,7 +2904,7 @@ def main():
         description=(
             f"Oracle EBS Offline Security Audit Scanner v{VERSION} — "
             "Analyze CSV exports from Oracle EBS databases without "
-            "requiring live database access (68 checks, zero dependencies)"
+            "requiring live database access (125 checks, zero dependencies)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
