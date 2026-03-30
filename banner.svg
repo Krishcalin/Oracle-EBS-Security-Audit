@@ -30,8 +30,8 @@
     <text x="450" y="44">UTL_FILE.FOPEN('/etc','passwd','R')</text>
     <text x="850" y="28">REVOKE EXECUTE ON UTL_HTTP FROM PUBLIC</text>
     <text x="24" y="326">ALTER SYSTEM SET audit_trail = DB,EXTENDED</text>
-    <text x="450" y="326">DBMS_SQL.PARSE(cursor, user_query, NATIVE)</text>
-    <text x="850" y="326">AP_INVOICES_ALL: duplicate_check = 'N'</text>
+    <text x="450" y="326">AP_APPROVAL_LIMITS: amount > 999999999</text>
+    <text x="850" y="326">FND_IREP_CLASSES: scope_type = 'PUBLIC'</text>
   </g>
   <rect x="0" y="0" width="1200" height="3.5" fill="url(#topBar)" rx="2"/>
   <g transform="translate(82, 148)">
@@ -58,7 +58,7 @@
     Security Audit Scanner
   </text>
   <text x="164" y="202" font-family="'Inter','Segoe UI',sans-serif" font-size="15" fill="#64748b" letter-spacing="0.3">
-    Live database security audit for Oracle E-Business Suite R12.x
+    Comprehensive security audit for Oracle E-Business Suite R12.x  |  Live + Offline modes
   </text>
   <g transform="translate(164, 222)">
     <rect x="0" y="0" width="68" height="24" rx="12" fill="#c0392b" opacity="0.12"/>
@@ -79,40 +79,46 @@
     <rect x="314" y="0" width="46" height="24" rx="12" fill="#a855f7" opacity="0.12"/>
     <rect x="314" y="0" width="46" height="24" rx="12" fill="none" stroke="#a855f7" stroke-width="0.8" opacity="0.35"/>
     <text x="337" y="16" font-family="'Inter',sans-serif" font-size="10.5" font-weight="600" fill="#a855f7" text-anchor="middle">CIS</text>
+    <rect x="368" y="0" width="50" height="24" rx="12" fill="#06b6d4" opacity="0.12"/>
+    <rect x="368" y="0" width="50" height="24" rx="12" fill="none" stroke="#06b6d4" stroke-width="0.8" opacity="0.35"/>
+    <text x="393" y="16" font-family="'Inter',sans-serif" font-size="10.5" font-weight="600" fill="#06b6d4" text-anchor="middle">STIG</text>
+    <rect x="426" y="0" width="56" height="24" rx="12" fill="#ec4899" opacity="0.12"/>
+    <rect x="426" y="0" width="56" height="24" rx="12" fill="none" stroke="#ec4899" stroke-width="0.8" opacity="0.35"/>
+    <text x="454" y="16" font-family="'Inter',sans-serif" font-size="10.5" font-weight="600" fill="#ec4899" text-anchor="middle">HIPAA</text>
   </g>
   <g transform="translate(770, 78)">
     <rect x="0" y="0" width="125" height="76" rx="10" fill="#1e293b" opacity="0.5"/>
     <rect x="0" y="0" width="125" height="76" rx="10" fill="none" stroke="#334155" stroke-width="0.7"/>
-    <text x="62" y="36" font-family="'Inter',sans-serif" font-size="30" font-weight="800" fill="#c0392b" text-anchor="middle">68</text>
+    <text x="62" y="36" font-family="'Inter',sans-serif" font-size="30" font-weight="800" fill="#c0392b" text-anchor="middle">125</text>
     <text x="62" y="56" font-family="'Inter',sans-serif" font-size="9.5" fill="#64748b" text-anchor="middle" letter-spacing="1.2">CHECKS</text>
     <rect x="135" y="0" width="125" height="76" rx="10" fill="#1e293b" opacity="0.5"/>
     <rect x="135" y="0" width="125" height="76" rx="10" fill="none" stroke="#334155" stroke-width="0.7"/>
-    <text x="197" y="36" font-family="'Inter',sans-serif" font-size="30" font-weight="800" fill="#e67e22" text-anchor="middle">10</text>
-    <text x="197" y="56" font-family="'Inter',sans-serif" font-size="9.5" fill="#64748b" text-anchor="middle" letter-spacing="1.2">CATEGORIES</text>
+    <text x="197" y="36" font-family="'Inter',sans-serif" font-size="30" font-weight="800" fill="#e67e22" text-anchor="middle">11</text>
+    <text x="197" y="56" font-family="'Inter',sans-serif" font-size="9.5" fill="#64748b" text-anchor="middle" letter-spacing="1.2">DOMAINS</text>
     <rect x="270" y="0" width="125" height="76" rx="10" fill="#1e293b" opacity="0.5"/>
     <rect x="270" y="0" width="125" height="76" rx="10" fill="none" stroke="#334155" stroke-width="0.7"/>
-    <text x="332" y="36" font-family="'Inter',sans-serif" font-size="30" font-weight="800" fill="#22c55e" text-anchor="middle">25+</text>
-    <text x="332" y="56" font-family="'Inter',sans-serif" font-size="9.5" fill="#64748b" text-anchor="middle" letter-spacing="1.2">CWEs</text>
+    <text x="332" y="36" font-family="'Inter',sans-serif" font-size="30" font-weight="800" fill="#22c55e" text-anchor="middle">20</text>
+    <text x="332" y="56" font-family="'Inter',sans-serif" font-size="9.5" fill="#64748b" text-anchor="middle" letter-spacing="1.2">SoD PAIRS</text>
   </g>
   <g transform="translate(770, 172)">
     <rect x="0" y="0" width="395" height="42" rx="8" fill="#1e293b" opacity="0.4"/>
     <rect x="0" y="0" width="395" height="42" rx="8" fill="none" stroke="#334155" stroke-width="0.5"/>
     <text x="14" y="16" font-family="'Inter',sans-serif" font-size="8.5" fill="#475569" letter-spacing="1.8">DOMAINS</text>
     <text x="14" y="33" font-family="'Inter',sans-serif" font-size="11" fill="#94a3b8">
-      Access · SoD · Financials · DB · Audit · Web · Crypto · Patching
+      Users · SoD · Passwords · Profiles · Roles · DB · Audit · App Config
     </text>
   </g>
   <g transform="translate(770, 226)">
     <rect x="0" y="0" width="395" height="42" rx="8" fill="#1e293b" opacity="0.4"/>
     <rect x="0" y="0" width="395" height="42" rx="8" fill="none" stroke="#334155" stroke-width="0.5"/>
-    <text x="14" y="16" font-family="'Inter',sans-serif" font-size="8.5" fill="#475569" letter-spacing="1.8">MODES</text>
+    <text x="14" y="16" font-family="'Inter',sans-serif" font-size="8.5" fill="#475569" letter-spacing="1.8">OUTPUT</text>
     <text x="14" y="33" font-family="'Inter',sans-serif" font-size="11" fill="#94a3b8">
-      Live DB Audit (oracledb) · JSON · HTML · Console · CI/CD Gating
+      Live DB + Offline CSV · JSON · HTML · Console · CI/CD Gating
     </text>
   </g>
   <line x1="40" y1="290" x2="1160" y2="290" stroke="#1e293b" stroke-width="0.7"/>
   <text x="164" y="312" font-family="'Inter','Segoe UI',sans-serif" font-size="11" fill="#475569" letter-spacing="0.2">
-    Oracle EBS R12.x Security Audit · SOX/CIS/NIST/PCI-DSS/HIPAA · github.com/Krishcalin/Oracle-EBS-Security-Audit
+    v1.2.0 · 125 checks · 11 domains · 22 CWEs · SOX/CIS/NIST/PCI-DSS/HIPAA/STIG · github.com/Krishcalin/Oracle-EBS-Security-Audit
   </text>
   <rect x="0" y="336.5" width="1200" height="3.5" fill="url(#topBar)" rx="2"/>
 </svg>
