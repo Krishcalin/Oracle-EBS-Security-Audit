@@ -1,0 +1,23 @@
+RESPONSIBILITY_NAME,APPLICATION_NAME,MENU_NAME,RESP_END_DATE
+System Administrator,FND,FND_NAVIGATE,
+Application Developer,FND,FND_DEVELOPER,
+Functional Administrator,FND,FND_FUNC_ADMIN,
+Security,FND,FND_SECURITY,
+Payables Manager,SQLAP,AP_NAVIGATE_GUI12,
+Receivables Manager,AR,AR_NAVIGATE_GUI12,
+General Ledger Super User,SQLGL,GL_SUPERUSER,
+Purchasing Super User,PO,PO_SUPERUSER,
+Human Resources,PER,HR_NAVIGATE,
+US Super HRMS Manager,PER,HR_US_MANAGER,
+Inventory Super User,INV,INV_NAVIGATE,
+Order Management Super User,ONT,ONT_NAVIGATE,
+Cash Management Super User,CE,CE_NAVIGATE,
+Fixed Assets Manager,OFA,FA_NAVIGATE,
+Projects Super User,PA,PA_NAVIGATE,
+Custom Finance Admin,SQLAP,FND_NAVIGATE,
+Custom Reporting Tool,FND,FND_NAVIGATE,
+IT Operations Console,FND,SYSADMIN_MENU,
+Vendor Self Service,FND,FND_VENDOR_MENU,
+Legacy Reporting Resp,FND,FND_LEGACY_REPORT,2024-06-30
+Old Procurement Resp,PO,PO_OLD_MENU,2023-12-31
+Deprecated HR Tool,PER,HR_LEGACY_MENU,2024-03-31

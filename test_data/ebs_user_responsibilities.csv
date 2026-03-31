@@ -1,0 +1,94 @@
+USER_NAME,USER_END_DATE,RESPONSIBILITY_NAME,RESP_START_DATE,RESP_END_DATE,RESPONSIBILITY_APPLICATION_ID,RESPONSIBILITY_ID
+SYSADMIN,,System Administrator,2010-01-01,,1,20420
+DLEE,,System Administrator,2016-08-12,,1,20420
+XYOUNG,,System Administrator,2018-04-22,,1,20420
+QADAMS,,System Administrator,2019-03-25,,1,20420
+YZHANG,,System Administrator,2020-12-01,,1,20420
+JSMITH,,System Administrator,2023-01-01,,1,20420
+DLEE,,Application Developer,2016-08-12,,50,20421
+XYOUNG,,Application Developer,2018-04-22,,50,20421
+QADAMS,,Application Developer,2019-03-25,,50,20421
+YZHANG,,Functional Administrator,2020-12-01,,1,20422
+DLEE,,Functional Administrator,2016-08-12,,1,20422
+JSMITH,,Payables Manager,2018-03-15,,200,20423
+MJOHNSON,,Payables Manager,2017-06-01,,200,20423
+OCONNOR,,Payables Manager,2022-08-20,,200,20423
+NREEVES,,Payables Manager,2021-05-10,,200,20423
+PBAKER,,Payables Manager,2020-11-15,,200,20423
+SHARED_AP,,Payables Manager,2020-01-01,,200,20423
+RWILLIAMS,,Receivables Manager,2019-01-10,,222,20424
+JSMITH,,Receivables Manager,2020-06-01,,222,20424
+RJONES,,Receivables Manager,2021-07-12,,222,20424
+NREEVES,,Receivables Manager,2021-05-10,,222,20424
+ABROWN,,Purchasing Super User,2020-04-20,,201,20425
+PBAKER,,Purchasing Super User,2020-11-15,,201,20425
+JSMITH,,Purchasing Super User,2023-06-01,,201,20425
+CGARCIA,,General Ledger Super User,2018-07-22,,101,20426
+WCLARK,,General Ledger Super User,2021-01-05,,101,20426
+JSMITH,,General Ledger Super User,2022-01-01,,101,20426
+NREEVES,,General Ledger Super User,2021-05-10,,101,20426
+TWONG,,Inventory Super User,2021-02-14,,401,20427
+ABROWN,,Inventory Super User,2022-01-01,,401,20427
+UVARGAS,,Order Management Super User,2020-09-10,,660,20428
+RJONES,,Cash Management Super User,2021-07-12,,260,20429
+STURNER,,Fixed Assets Manager,2022-02-01,,140,20430
+BMARTIN,,Projects Super User,2019-09-05,,275,20431
+KPATEL,,Human Resources,2015-11-01,,800,20432
+VHARRIS,,Human Resources,2019-06-18,,800,20432
+KPATEL,,US Super HRMS Manager,2015-11-01,,800,20433
+VHARRIS,,US Super HRMS Manager,2019-06-18,,800,20433
+YZHANG,,Security,2020-12-01,,1,20434
+ZALLEN,,Security,2021-09-15,,1,20434
+MJOHNSON,,Purchasing Super User,2023-01-01,,201,20425
+MJOHNSON,,General Ledger Super User,2023-03-01,,101,20426
+CGARCIA,,Payables Manager,2023-06-01,,200,20423
+KPATEL,,Payables Manager,2024-01-01,,200,20423
+JSMITH,,Human Resources,2024-01-01,,800,20432
+DLEE,,Payables Manager,2023-09-01,,200,20423
+DLEE,,General Ledger Super User,2023-09-01,,101,20426
+DLEE,,Purchasing Super User,2023-09-01,,201,20425
+DLEE,,Receivables Manager,2023-09-01,,222,20424
+DLEE,,Human Resources,2023-09-01,,800,20432
+DLEE,,Security,2023-09-01,,1,20434
+MWILSON,,Payables Manager,2020-01-01,,200,20423
+SCHEN,,General Ledger Super User,2020-01-01,,101,20426
+JPARK,,Purchasing Super User,2020-01-01,,201,20425
+RTHOMAS,,Receivables Manager,2020-01-01,,222,20424
+ORPHAN_USER1,,Payables Manager,2022-06-01,,200,20423
+ORPHAN_USER2,,Purchasing Super User,2023-01-15,,201,20425
+GENERIC_REPORT,,General Ledger Super User,2019-05-15,,101,20426
+TESTUSER_QA,,System Administrator,2022-03-01,,1,20420
+TESTUSER_QA,,Application Developer,2022-03-01,,50,20421
+TEMPUSER_AUDIT,,Security,2025-01-01,,1,20434
+JSMITH,,Security,2024-06-01,,1,20434
+JSMITH,,Cash Management Super User,2024-06-01,,260,20429
+JSMITH,,Inventory Super User,2024-06-01,,401,20427
+NREEVES,,Purchasing Super User,2023-01-01,,201,20425
+NREEVES,,Human Resources,2023-06-01,,800,20432
+NREEVES,,Security,2023-06-01,,1,20434
+RWILLIAMS,,Payables Manager,2024-01-01,,200,20423
+RWILLIAMS,,Purchasing Super User,2024-01-01,,201,20425
+ABROWN,,Payables Manager,2024-06-01,,200,20423
+ABROWN,,General Ledger Super User,2024-06-01,,101,20426
+TWONG,,Purchasing Super User,2024-01-01,,201,20425
+OCONNOR,,Purchasing Super User,2024-06-01,,201,20425
+OCONNOR,,General Ledger Super User,2024-06-01,,101,20426
+PBAKER,,Payables Manager,2024-06-01,,200,20423
+PBAKER,,Inventory Super User,2024-06-01,,401,20427
+CGARCIA,,Receivables Manager,2024-01-01,,222,20424
+DLEE,,Inventory Super User,2023-09-01,,401,20427
+XYOUNG,,Payables Manager,2024-01-01,,200,20423
+XYOUNG,,General Ledger Super User,2024-01-01,,101,20426
+SYSADMIN,,Payables Manager,2015-01-01,,200,20423
+SYSADMIN,,Purchasing Super User,2015-01-01,,201,20425
+SYSADMIN,,General Ledger Super User,2015-01-01,,101,20426
+SYSADMIN,,Human Resources,2015-01-01,,800,20432
+VHARRIS,,Payables Manager,2024-01-01,,200,20423
+WCLARK,,Payables Manager,2024-06-01,,200,20423
+WCLARK,,Receivables Manager,2024-06-01,,222,20424
+WCLARK,,Purchasing Super User,2024-06-01,,201,20425
+BMARTIN,,Payables Manager,2024-01-01,,200,20423
+BMARTIN,,Purchasing Super User,2024-01-01,,201,20425
+JSMITH,,Legacy Reporting Resp,2020-01-01,,1,20499
+MJOHNSON,,Legacy Reporting Resp,2021-01-01,,1,20499
+RWILLIAMS,,Legacy Reporting Resp,2022-01-01,,1,20499

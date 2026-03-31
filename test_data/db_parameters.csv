@@ -1,0 +1,7 @@
+NAME,VALUE
+audit_trail,NONE
+utl_file_dir,/tmp:/usr/tmp:/home/oracle/scripts
+remote_os_authent,TRUE
+sec_case_sensitive_logon,FALSE
+os_authent_prefix,ops$
+remote_login_passwordfile,EXCLUSIVE
