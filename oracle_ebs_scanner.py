@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Oracle E-Business Suite Security Audit Scanner v1.2.0
+Oracle E-Business Suite Security Audit Scanner v1.4.0
 
-Connects to an Oracle EBS database and performs 125 security audit checks
+Connects to an Oracle EBS database and performs 145 security audit checks
 across user management, access controls, profile options, segregation
 of duties, database hardening, patching, and more.
 
@@ -33,7 +33,7 @@ except ImportError:
     )
     sys.exit(2)
 
-__version__ = "1.2.0"
+__version__ = "1.4.0"
 VERSION = __version__
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -374,6 +374,8 @@ class OracleEBSScanner:
             ("Patching & Versions",          self._check_patching),
             ("Workflow & Approvals",         self._check_workflow),
             ("Application Configuration",   self._check_app_config),
+            ("Data Privacy & PII",          self._check_data_privacy),
+            ("Custom Code Security",        self._check_custom_code),
         ]
 
         for name, fn in groups:
@@ -2987,6 +2989,650 @@ class OracleEBSScanner:
             self._pass("ORA-APP-015", "No public IREP services deployed")
 
     # ═════════════════════════════════════════════════════════════════
+    # Check Group 12 — Data Privacy & PII Protection  (ORA-DPP-001..010)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _check_data_privacy(self):
+
+        # ORA-DPP-001  PII table inventory — who has SELECT on HR data
+        rows = self._query(
+            "SELECT GRANTEE, TABLE_NAME, PRIVILEGE "
+            "FROM DBA_TAB_PRIVS "
+            "WHERE TABLE_NAME IN ("
+            "  'PER_ALL_PEOPLE_F','PER_ALL_ASSIGNMENTS_F',"
+            "  'PER_ADDRESSES','PER_PHONES','PER_CONTACT_RELATIONSHIPS') "
+            "  AND PRIVILEGE = 'SELECT' "
+            "  AND GRANTEE NOT IN ('SYS','SYSTEM','APPS','APPLSYS',"
+            "    'HR','PER','PUBLIC') "
+            "ORDER BY TABLE_NAME, GRANTEE"
+        )
+        if rows:
+            grantees = sorted(set(r["GRANTEE"] for r in rows))
+            details = ", ".join(grantees[:10])
+            self._add(Finding(
+                "ORA-DPP-001",
+                "Non-standard schemas with SELECT on HR PII tables",
+                "Data Privacy", "HIGH",
+                "DBA_TAB_PRIVS",
+                f"HR PII table grantees ({len(grantees)}): {details}",
+                f"{len(grantees)} non-standard schema(s) have direct SELECT "
+                "on HR tables containing personal data (SSN, DOB, salary, "
+                "addresses, phone numbers).",
+                "Revoke direct SELECT on HR PII tables from non-essential "
+                "schemas. Use APPS-layer APIs for controlled data access.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-DPP-001", "HR PII table access restricted")
+
+        # ORA-DPP-002  Customer PII — grants on HZ_PARTIES / HZ_PERSON_PROFILES
+        rows = self._query(
+            "SELECT GRANTEE, TABLE_NAME "
+            "FROM DBA_TAB_PRIVS "
+            "WHERE TABLE_NAME IN ('HZ_PARTIES','HZ_PERSON_PROFILES',"
+            "  'HZ_CONTACT_POINTS','HZ_LOCATIONS') "
+            "  AND PRIVILEGE = 'SELECT' "
+            "  AND GRANTEE NOT IN ('SYS','SYSTEM','APPS','APPLSYS',"
+            "    'AR','HZ','PUBLIC') "
+            "ORDER BY TABLE_NAME, GRANTEE"
+        )
+        if rows:
+            grantees = sorted(set(r["GRANTEE"] for r in rows))
+            details = ", ".join(grantees[:10])
+            self._add(Finding(
+                "ORA-DPP-002",
+                "Non-standard schemas with SELECT on customer PII tables",
+                "Data Privacy", "HIGH",
+                "DBA_TAB_PRIVS",
+                f"Customer PII grantees ({len(grantees)}): {details}",
+                f"{len(grantees)} non-standard schema(s) have direct SELECT "
+                "on customer/party tables containing personal data.",
+                "Revoke direct SELECT on HZ_PARTIES and related tables. "
+                "Route access through TCA APIs.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-DPP-002", "Customer PII table access restricted")
+
+        # ORA-DPP-003  Credit card data — IBY_CREDITCARD unencrypted
+        cnt = self._count(
+            "SELECT COUNT(*) FROM ALL_TAB_COLUMNS "
+            "WHERE TABLE_NAME = 'IBY_CREDITCARD' "
+            "  AND COLUMN_NAME = 'CCNUMBER' "
+            "  AND DATA_TYPE = 'VARCHAR2'"
+        )
+        if cnt > 0:
+            # Check if any unmasked CC numbers exist
+            cc_cnt = self._count(
+                "SELECT COUNT(*) FROM IBY_CREDITCARD "
+                "WHERE CCNUMBER IS NOT NULL "
+                "  AND LENGTH(CCNUMBER) > 6 "
+                "  AND ROWNUM <= 1"
+            )
+            if cc_cnt > 0:
+                self._add(Finding(
+                    "ORA-DPP-003",
+                    "Credit card numbers potentially stored unmasked",
+                    "Data Privacy", "CRITICAL",
+                    "IBY_CREDITCARD",
+                    "CCNUMBER column contains data > 6 chars",
+                    "The IBY_CREDITCARD table appears to contain unmasked "
+                    "credit card numbers. PCI-DSS requires PAN to be "
+                    "encrypted or tokenized at rest.",
+                    "Enable Oracle Payments encryption. Verify that CCNUMBER "
+                    "stores only masked/tokenized values. Run the Oracle "
+                    "Payments Key Management utility.",
+                    "CWE-312",
+                ))
+            else:
+                self._pass("ORA-DPP-003", "Credit card data appears masked")
+        else:
+            self._pass("ORA-DPP-003", "IBY_CREDITCARD table not found or inapplicable")
+
+        # ORA-DPP-004  SSN / National ID access controls
+        rows = self._query(
+            "SELECT DISTINCT fu.USER_NAME "
+            "FROM FND_USER fu "
+            "JOIN FND_USER_RESP_GROUPS_DIRECT furg "
+            "  ON fu.USER_ID = furg.USER_ID "
+            "JOIN FND_RESPONSIBILITY_TL frt "
+            "  ON furg.RESPONSIBILITY_ID = frt.RESPONSIBILITY_ID "
+            "  AND furg.RESPONSIBILITY_APPLICATION_ID = frt.APPLICATION_ID "
+            "  AND frt.LANGUAGE = 'US' "
+            "WHERE (fu.END_DATE IS NULL OR fu.END_DATE > SYSDATE) "
+            "  AND (furg.END_DATE IS NULL OR furg.END_DATE > SYSDATE) "
+            "  AND (frt.RESPONSIBILITY_NAME LIKE '%Human Resources%' "
+            "    OR frt.RESPONSIBILITY_NAME LIKE '%HRMS%' "
+            "    OR frt.RESPONSIBILITY_NAME LIKE '%US Super HRMS%' "
+            "    OR frt.RESPONSIBILITY_NAME LIKE '%Payroll%') "
+            "ORDER BY fu.USER_NAME"
+        )
+        if len(rows) > 15:
+            names = ", ".join(r["USER_NAME"] for r in rows[:10])
+            self._add(Finding(
+                "ORA-DPP-004",
+                "Excessive users with access to SSN/NID data",
+                "Data Privacy", "HIGH",
+                "FND_USER_RESP_GROUPS_DIRECT",
+                f"HR/Payroll users ({len(rows)}): {names} ...",
+                f"{len(rows)} users have HR/Payroll responsibilities that "
+                "provide access to SSN, national identifiers, and salary data. "
+                "This exceeds the recommended threshold of 15.",
+                "Review HR/Payroll responsibility assignments. Restrict to "
+                "only users whose job function requires PII access.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-DPP-004", f"HR/Payroll access count acceptable ({len(rows)})")
+
+        # ORA-DPP-005  Non-production data masking
+        # Check if current instance looks like non-prod
+        instance = self._instance_name.upper() if self._instance_name else ""
+        is_nonprod = any(kw in instance for kw in (
+            "DEV", "TEST", "QA", "UAT", "STG", "STAGING", "SANDBOX",
+            "TRAIN", "DEMO", "CLONE", "COPY",
+        ))
+        if is_nonprod:
+            # Check if PII tables have realistic-looking data
+            cnt = self._count(
+                "SELECT COUNT(*) FROM PER_ALL_PEOPLE_F "
+                "WHERE NATIONAL_IDENTIFIER IS NOT NULL "
+                "  AND LENGTH(NATIONAL_IDENTIFIER) >= 9 "
+                "  AND ROWNUM <= 1"
+            )
+            if cnt > 0:
+                self._add(Finding(
+                    "ORA-DPP-005",
+                    "Non-production instance may contain unmasked PII",
+                    "Data Privacy", "HIGH",
+                    "PER_ALL_PEOPLE_F",
+                    f"Instance '{self._instance_name}' appears non-production, "
+                    "NATIONAL_IDENTIFIER contains real-length data",
+                    "This non-production instance appears to contain unmasked "
+                    "personal identifiers. GDPR/CCPA require non-production "
+                    "environments to use anonymized or synthetic data.",
+                    "Apply Oracle Data Masking and Subsetting or a third-party "
+                    "masking tool before refreshing non-production environments.",
+                    "CWE-200",
+                ))
+            else:
+                self._pass("ORA-DPP-005", "Non-prod PII appears masked")
+        else:
+            self._pass("ORA-DPP-005", "Production instance — masking check N/A")
+
+        # ORA-DPP-006  Data retention / purge programs configured
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_CONCURRENT_PROGRAMS "
+            "WHERE ENABLED_FLAG = 'Y' "
+            "  AND (UPPER(CONCURRENT_PROGRAM_NAME) LIKE '%PURGE%' "
+            "    OR UPPER(CONCURRENT_PROGRAM_NAME) LIKE '%ARCHIVE%' "
+            "    OR UPPER(CONCURRENT_PROGRAM_NAME) LIKE '%ANONYMIZ%' "
+            "    OR UPPER(CONCURRENT_PROGRAM_NAME) LIKE '%MASK%')"
+        )
+        if cnt == 0:
+            self._add(Finding(
+                "ORA-DPP-006",
+                "No data purge/archive programs enabled",
+                "Data Privacy", "MEDIUM",
+                "FND_CONCURRENT_PROGRAMS",
+                "Purge/archive programs: 0",
+                "No enabled concurrent programs for data purge, archival, "
+                "or anonymization were found. Data retention policies cannot "
+                "be enforced without purge mechanisms.",
+                "Enable and schedule data purge programs appropriate for your "
+                "retention policies (e.g., Purge Person Data, Archive Audit).",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-DPP-006", f"Purge/archive programs found: {cnt}")
+
+        # ORA-DPP-007  Fine-Grained Auditing on PII columns
+        pii_tables = ("PER_ALL_PEOPLE_F", "HZ_PARTIES", "IBY_CREDITCARD",
+                       "AP_SUPPLIERS", "PER_ADDRESSES")
+        fga_count = 0
+        for tbl in pii_tables:
+            cnt = self._count(
+                "SELECT COUNT(*) FROM DBA_AUDIT_POLICIES "
+                "WHERE OBJECT_NAME = :1 AND ENABLED = 'YES'",
+                [tbl],
+            )
+            fga_count += cnt
+        if fga_count == 0:
+            self._add(Finding(
+                "ORA-DPP-007",
+                "No FGA policies on PII tables",
+                "Data Privacy", "MEDIUM",
+                "DBA_AUDIT_POLICIES",
+                "FGA on PII tables: 0",
+                "No Fine-Grained Auditing policies are active on tables "
+                "containing personal data. Access to SSN, salary, credit "
+                "card, and address data is not being tracked at column level.",
+                "Create FGA policies on NATIONAL_IDENTIFIER, SALARY, "
+                "CCNUMBER, and similar columns in PII tables.",
+                "CWE-778",
+            ))
+        else:
+            self._pass("ORA-DPP-007", f"FGA on PII tables: {fga_count}")
+
+        # ORA-DPP-008  BI Publisher / XML Publisher reports with PII access
+        cnt = self._count(
+            "SELECT COUNT(*) FROM XDO_DS_DEFINITIONS_B "
+            "WHERE DATA_SOURCE_CODE IN ("
+            "  SELECT DATA_SOURCE_CODE FROM XDO_DS_DEFINITIONS_B "
+            "  WHERE UPPER(DATA_SOURCE_CODE) LIKE '%PER%' "
+            "    OR UPPER(DATA_SOURCE_CODE) LIKE '%HR%' "
+            "    OR UPPER(DATA_SOURCE_CODE) LIKE '%PAYROLL%' "
+            "    OR UPPER(DATA_SOURCE_CODE) LIKE '%EMPLOYEE%')"
+        )
+        if cnt > 20:
+            self._add(Finding(
+                "ORA-DPP-008",
+                "Excessive BI Publisher data sources with HR/PII access",
+                "Data Privacy", "MEDIUM",
+                "XDO_DS_DEFINITIONS_B",
+                f"HR-related BI Publisher sources: {cnt}",
+                f"{cnt} BI Publisher data source definitions reference HR, "
+                "payroll, or employee data. Each represents a potential "
+                "data extraction channel for PII.",
+                "Review HR-related BI Publisher reports and restrict access "
+                "via responsibility/role assignments. Ensure reports mask "
+                "sensitive fields (SSN, salary) where not required.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-DPP-008", f"BI Publisher HR sources: {cnt}")
+
+        # ORA-DPP-009  PER_ALL_PEOPLE_F access breadth
+        cnt = self._count(
+            "SELECT COUNT(DISTINCT fu.USER_ID) "
+            "FROM FND_USER fu "
+            "JOIN FND_USER_RESP_GROUPS_DIRECT furg "
+            "  ON fu.USER_ID = furg.USER_ID "
+            "JOIN FND_RESPONSIBILITY fr "
+            "  ON furg.RESPONSIBILITY_ID = fr.RESPONSIBILITY_ID "
+            "  AND furg.RESPONSIBILITY_APPLICATION_ID = fr.APPLICATION_ID "
+            "WHERE (fu.END_DATE IS NULL OR fu.END_DATE > SYSDATE) "
+            "  AND (furg.END_DATE IS NULL OR furg.END_DATE > SYSDATE) "
+            "  AND fr.APPLICATION_ID = 800"  # HRMS application
+        )
+        if cnt > 25:
+            self._add(Finding(
+                "ORA-DPP-009",
+                "Broad HRMS application access (PER_ALL_PEOPLE_F exposure)",
+                "Data Privacy", "HIGH",
+                "FND_USER_RESP_GROUPS_DIRECT",
+                f"Users with HRMS app responsibilities: {cnt}",
+                f"{cnt} users have responsibilities under the HRMS application "
+                "(APP_ID=800), potentially granting access to all employee "
+                "records in PER_ALL_PEOPLE_F.",
+                "Implement HRMS Security Profiles to restrict each user's "
+                "access to only relevant employees (by organization, position, "
+                "or supervisor hierarchy).",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-DPP-009", f"HRMS access count acceptable ({cnt})")
+
+        # ORA-DPP-010  Data extract interfaces without controls
+        rows = self._query(
+            "SELECT CONCURRENT_PROGRAM_NAME "
+            "FROM FND_CONCURRENT_PROGRAMS "
+            "WHERE ENABLED_FLAG = 'Y' "
+            "  AND EXECUTION_METHOD_CODE IN ('H', 'K', 'L') "
+            "  AND (UPPER(CONCURRENT_PROGRAM_NAME) LIKE '%EXTRACT%' "
+            "    OR UPPER(CONCURRENT_PROGRAM_NAME) LIKE '%EXPORT%' "
+            "    OR UPPER(CONCURRENT_PROGRAM_NAME) LIKE '%DOWNLOAD%' "
+            "    OR UPPER(CONCURRENT_PROGRAM_NAME) LIKE '%OUTBOUND%') "
+            "ORDER BY CONCURRENT_PROGRAM_NAME"
+        )
+        if len(rows) > 10:
+            names = ", ".join(r["CONCURRENT_PROGRAM_NAME"] for r in rows[:10])
+            self._add(Finding(
+                "ORA-DPP-010",
+                "Excessive data extract programs enabled",
+                "Data Privacy", "MEDIUM",
+                "FND_CONCURRENT_PROGRAMS",
+                f"Extract/export programs ({len(rows)}): {names} ...",
+                f"{len(rows)} enabled concurrent programs appear to be data "
+                "extraction or export programs. Each is a potential data "
+                "exfiltration channel.",
+                "Review all extract/export programs. Ensure they are "
+                "restricted to appropriate request groups and that output "
+                "files are written to secured directories.",
+                "CWE-200",
+            ))
+        else:
+            self._pass("ORA-DPP-010", f"Extract programs count acceptable ({len(rows)})")
+
+    # ═════════════════════════════════════════════════════════════════
+    # Check Group 13 — Custom Code Security  (ORA-CCS-001 .. 010)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _check_custom_code(self):
+
+        # ORA-CCS-001  PL/SQL injection — dynamic SQL without bind variables
+        rows = self._query(
+            "SELECT DISTINCT s.OWNER, s.NAME, s.TYPE "
+            "FROM DBA_SOURCE s "
+            "WHERE s.OWNER IN ('APPS','XXCUST','XX%') "
+            "  AND s.TYPE IN ('PACKAGE BODY','PROCEDURE','FUNCTION') "
+            "  AND UPPER(s.TEXT) LIKE '%EXECUTE IMMEDIATE%' "
+            "  AND s.TEXT NOT LIKE '%USING%' "
+            "  AND ROWNUM <= 50 "
+            "ORDER BY s.OWNER, s.NAME"
+        )
+        if rows:
+            details = "; ".join(
+                f"{r['OWNER']}.{r['NAME']}" for r in rows[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-001",
+                "Dynamic SQL without bind variables detected",
+                "Custom Code Security", "CRITICAL",
+                "DBA_SOURCE",
+                f"EXECUTE IMMEDIATE without USING ({len(rows)}): {details}",
+                f"{len(rows)} PL/SQL object(s) use EXECUTE IMMEDIATE without "
+                "bind variables (USING clause). This is the primary vector "
+                "for SQL injection in Oracle EBS custom code.",
+                "Refactor all EXECUTE IMMEDIATE statements to use bind "
+                "variables via the USING clause. Never concatenate user "
+                "input into dynamic SQL strings.",
+                "CWE-89",
+            ))
+        else:
+            self._pass("ORA-CCS-001", "No obvious dynamic SQL injection patterns")
+
+        # ORA-CCS-002  Hardcoded credentials in PL/SQL source
+        rows = self._query(
+            "SELECT DISTINCT s.OWNER, s.NAME, s.TYPE "
+            "FROM DBA_SOURCE s "
+            "WHERE s.OWNER NOT IN ('SYS','SYSTEM','MDSYS','CTXSYS','XDB') "
+            "  AND s.TYPE IN ('PACKAGE BODY','PROCEDURE','FUNCTION') "
+            "  AND (UPPER(s.TEXT) LIKE '%PASSWORD%:=%''%' "
+            "    OR UPPER(s.TEXT) LIKE '%PASSWORD%=>%''%' "
+            "    OR UPPER(s.TEXT) LIKE '%PWD%:=%''%' "
+            "    OR REGEXP_LIKE(s.TEXT, "
+            "      '(password|passwd|pwd|secret|api.?key)\\s*(:=|=>|=)\\s*''[^'']+''', 'i')) "
+            "  AND ROWNUM <= 50 "
+            "ORDER BY s.OWNER, s.NAME"
+        )
+        if rows:
+            details = "; ".join(
+                f"{r['OWNER']}.{r['NAME']}" for r in rows[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-002",
+                "Hardcoded credentials in PL/SQL source code",
+                "Custom Code Security", "CRITICAL",
+                "DBA_SOURCE",
+                f"Hardcoded credentials ({len(rows)}): {details}",
+                f"{len(rows)} PL/SQL object(s) appear to contain hardcoded "
+                "passwords, secrets, or API keys in source code.",
+                "Move credentials to Oracle Wallet, FND_VAULT, or secure "
+                "profile options. Never store passwords in source code.",
+                "CWE-798",
+            ))
+        else:
+            self._pass("ORA-CCS-002", "No hardcoded credentials found")
+
+        # ORA-CCS-003  CUSTOM.pll / custom Forms triggers
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_ATTACHED_DOCUMENTS fad "
+            "JOIN FND_DOCUMENTS fd ON fad.DOCUMENT_ID = fd.DOCUMENT_ID "
+            "WHERE fd.FILE_NAME LIKE '%CUSTOM%pll%' "
+            "  OR fd.FILE_NAME LIKE '%custom%pll%'"
+        )
+        # Also check for custom triggers via form functions
+        custom_forms = self._count(
+            "SELECT COUNT(*) FROM FND_FORM_CUSTOM_RULES "
+            "WHERE ENABLED = 'Y'"
+        )
+        if custom_forms > 50:
+            self._add(Finding(
+                "ORA-CCS-003",
+                "Excessive custom form personalization rules",
+                "Custom Code Security", "MEDIUM",
+                "FND_FORM_CUSTOM_RULES",
+                f"Active custom form rules: {custom_forms}",
+                f"{custom_forms} active form personalization rules found. "
+                "Custom form rules can modify application behavior, hide "
+                "fields, auto-populate values, and bypass validation.",
+                "Review all active form personalization rules for security "
+                "implications. Disable rules that are no longer needed.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-CCS-003", f"Custom form rules: {custom_forms}")
+
+        # ORA-CCS-004  Insecure FND_USER_PKG usage
+        rows = self._query(
+            "SELECT DISTINCT s.OWNER, s.NAME "
+            "FROM DBA_SOURCE s "
+            "WHERE s.OWNER NOT IN ('SYS','SYSTEM','APPS','APPLSYS') "
+            "  AND s.TYPE IN ('PACKAGE BODY','PROCEDURE','FUNCTION') "
+            "  AND (UPPER(s.TEXT) LIKE '%FND_USER_PKG.CREATEUSER%' "
+            "    OR UPPER(s.TEXT) LIKE '%FND_USER_PKG.UPDATEUSER%' "
+            "    OR UPPER(s.TEXT) LIKE '%FND_USER_PKG.CHANGEPASSWORD%') "
+            "  AND ROWNUM <= 50 "
+            "ORDER BY s.OWNER, s.NAME"
+        )
+        if rows:
+            details = "; ".join(
+                f"{r['OWNER']}.{r['NAME']}" for r in rows[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-004",
+                "Custom code calling FND_USER_PKG (user management API)",
+                "Custom Code Security", "HIGH",
+                "DBA_SOURCE",
+                f"FND_USER_PKG callers ({len(rows)}): {details}",
+                f"{len(rows)} custom PL/SQL object(s) call FND_USER_PKG to "
+                "create users, change passwords, or modify accounts. This "
+                "bypasses standard provisioning controls.",
+                "Review all custom code calling FND_USER_PKG. Ensure proper "
+                "authorization checks and audit logging are in place.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-CCS-004", "No custom FND_USER_PKG usage found")
+
+        # ORA-CCS-005  Custom concurrent programs with OS execution
+        rows = self._query(
+            "SELECT fcp.CONCURRENT_PROGRAM_NAME, "
+            "  fcpt.USER_CONCURRENT_PROGRAM_NAME, "
+            "  fcp.EXECUTION_METHOD_CODE "
+            "FROM FND_CONCURRENT_PROGRAMS fcp "
+            "JOIN FND_CONCURRENT_PROGRAMS_TL fcpt "
+            "  ON fcp.CONCURRENT_PROGRAM_ID = fcpt.CONCURRENT_PROGRAM_ID "
+            "  AND fcp.APPLICATION_ID = fcpt.APPLICATION_ID "
+            "  AND fcpt.LANGUAGE = 'US' "
+            "WHERE fcp.EXECUTION_METHOD_CODE IN ('H', 'K') "
+            "  AND fcp.ENABLED_FLAG = 'Y' "
+            "  AND fcp.CONCURRENT_PROGRAM_NAME LIKE 'XX%' "
+            "ORDER BY fcp.CONCURRENT_PROGRAM_NAME"
+        )
+        if rows:
+            names = ", ".join(r["CONCURRENT_PROGRAM_NAME"] for r in rows[:10])
+            self._add(Finding(
+                "ORA-CCS-005",
+                "Custom concurrent programs with OS/shell execution",
+                "Custom Code Security", "HIGH",
+                "FND_CONCURRENT_PROGRAMS",
+                f"Custom shell programs ({len(rows)}): {names}",
+                f"{len(rows)} custom concurrent program(s) (XX* prefix) execute "
+                "shell scripts or host commands. Custom OS-level programs "
+                "are a high-risk vector for command injection.",
+                "Review each custom shell program. Validate input parameters, "
+                "avoid passing user-supplied data to OS commands, and restrict "
+                "request group access to authorized users only.",
+                "CWE-78",
+            ))
+        else:
+            self._pass("ORA-CCS-005", "No custom shell programs found")
+
+        # ORA-CCS-006  FNDLOAD scripts that modify security config
+        cnt = self._count(
+            "SELECT COUNT(*) FROM FND_CONCURRENT_REQUESTS fcr "
+            "JOIN FND_CONCURRENT_PROGRAMS fcp "
+            "  ON fcr.CONCURRENT_PROGRAM_ID = fcp.CONCURRENT_PROGRAM_ID "
+            "  AND fcr.PROGRAM_APPLICATION_ID = fcp.APPLICATION_ID "
+            "WHERE fcp.CONCURRENT_PROGRAM_NAME IN ('FNDLOAD','FNDSLOAD','WFLOAD') "
+            "  AND fcr.PHASE_CODE = 'C' "
+            "  AND fcr.ACTUAL_START_DATE > SYSDATE - 90"
+        )
+        if cnt > 0:
+            self._add(Finding(
+                "ORA-CCS-006",
+                "FNDLOAD/FNDSLOAD/WFLOAD executed recently",
+                "Custom Code Security", "MEDIUM",
+                "FND_CONCURRENT_REQUESTS",
+                f"Loader executions (90d): {cnt}",
+                f"{cnt} execution(s) of configuration loader programs in the "
+                "last 90 days. These programs can modify menus, responsibilities, "
+                "form functions, and workflow definitions.",
+                "Review each FNDLOAD execution for authorization. Ensure "
+                "change management approval was obtained before running loaders.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-CCS-006", "No recent loader executions")
+
+        # ORA-CCS-007  Custom database triggers on security tables
+        rows = self._query(
+            "SELECT TRIGGER_NAME, TABLE_NAME, TRIGGER_TYPE, STATUS "
+            "FROM DBA_TRIGGERS "
+            "WHERE TABLE_NAME IN ('FND_USER','FND_USER_RESP_GROUPS_DIRECT',"
+            "  'FND_RESPONSIBILITY','FND_PROFILE_OPTION_VALUES',"
+            "  'FND_LOGINS','AP_CHECKS_ALL') "
+            "  AND OWNER NOT IN ('SYS','SYSTEM','APPS','APPLSYS') "
+            "  AND STATUS = 'ENABLED' "
+            "ORDER BY TABLE_NAME, TRIGGER_NAME"
+        )
+        if rows:
+            details = "; ".join(
+                f"{r['TRIGGER_NAME']} on {r['TABLE_NAME']}" for r in rows[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-007",
+                "Custom triggers on security tables",
+                "Custom Code Security", "HIGH",
+                "DBA_TRIGGERS",
+                f"Custom triggers ({len(rows)}): {details}",
+                f"{len(rows)} custom database trigger(s) are active on security-"
+                "critical tables. These can intercept, modify, or exfiltrate "
+                "data during DML operations on user accounts, responsibilities, "
+                "and financial records.",
+                "Review all custom triggers on security tables. Remove "
+                "unauthorized triggers and ensure legitimate ones have "
+                "proper audit logging.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-CCS-007", "No custom triggers on security tables")
+
+        # ORA-CCS-008  Custom synonyms/grants bypassing EBS security
+        rows = self._query(
+            "SELECT OWNER, SYNONYM_NAME, TABLE_OWNER, TABLE_NAME "
+            "FROM DBA_SYNONYMS "
+            "WHERE TABLE_NAME IN ('FND_USER','FND_USER_RESP_GROUPS_DIRECT',"
+            "  'AP_CHECKS_ALL','AP_INVOICES_ALL','GL_JE_HEADERS',"
+            "  'PER_ALL_PEOPLE_F') "
+            "  AND OWNER NOT IN ('SYS','SYSTEM','APPS','APPLSYS','PUBLIC') "
+            "  AND TABLE_OWNER = 'APPS' "
+            "ORDER BY TABLE_NAME, OWNER"
+        )
+        if rows:
+            details = "; ".join(
+                f"{r['OWNER']}.{r['SYNONYM_NAME']}->{r['TABLE_NAME']}"
+                for r in rows[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-008",
+                "Custom synonyms pointing to security/financial tables",
+                "Custom Code Security", "MEDIUM",
+                "DBA_SYNONYMS",
+                f"Custom synonyms ({len(rows)}): {details}",
+                f"{len(rows)} custom synonym(s) in non-standard schemas point "
+                "to security or financial tables in the APPS schema, "
+                "potentially bypassing EBS application-level security.",
+                "Review custom synonyms and associated grants. Remove "
+                "synonyms that are not operationally required.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-CCS-008", "No unauthorized custom synonyms")
+
+        # ORA-CCS-009  Custom objects in APPS schema (change management)
+        cnt = self._count(
+            "SELECT COUNT(*) FROM DBA_OBJECTS "
+            "WHERE OWNER = 'APPS' "
+            "  AND OBJECT_NAME LIKE 'XX%' "
+            "  AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY','PROCEDURE',"
+            "    'FUNCTION','TRIGGER','VIEW') "
+            "  AND STATUS = 'VALID'"
+        )
+        if cnt > 200:
+            self._add(Finding(
+                "ORA-CCS-009",
+                "Large volume of custom objects in APPS schema",
+                "Custom Code Security", "MEDIUM",
+                "DBA_OBJECTS",
+                f"Custom APPS objects (XX*): {cnt}",
+                f"{cnt} custom PL/SQL objects (XX* naming convention) exist in "
+                "the APPS schema. A large custom codebase increases the "
+                "attack surface and requires regular security review.",
+                "Conduct periodic security code reviews on custom objects. "
+                "Maintain an inventory of all custom code with owner, "
+                "purpose, and last review date.",
+                "CWE-1104",
+            ))
+        elif cnt > 0:
+            self._add(Finding(
+                "ORA-CCS-009",
+                "Custom objects in APPS schema inventory",
+                "Custom Code Security", "INFO",
+                "DBA_OBJECTS",
+                f"Custom APPS objects (XX*): {cnt}",
+                f"{cnt} custom PL/SQL object(s) in the APPS schema.",
+                "Periodically review custom code for security issues.",
+            ))
+        else:
+            self._pass("ORA-CCS-009", "No custom objects in APPS schema")
+
+        # ORA-CCS-010  Custom packages with AUTHID CURRENT_USER
+        rows = self._query(
+            "SELECT OBJECT_NAME, OWNER "
+            "FROM DBA_PROCEDURES "
+            "WHERE AUTHID = 'CURRENT_USER' "
+            "  AND OWNER NOT IN ('SYS','SYSTEM','MDSYS','CTXSYS','XDB',"
+            "    'WMSYS','ORDSYS','EXFSYS') "
+            "  AND OBJECT_TYPE = 'PACKAGE' "
+            "  AND OBJECT_NAME LIKE 'XX%' "
+            "ORDER BY OWNER, OBJECT_NAME"
+        )
+        if rows:
+            details = "; ".join(
+                f"{r['OWNER']}.{r['OBJECT_NAME']}" for r in rows[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-010",
+                "Custom packages with AUTHID CURRENT_USER",
+                "Custom Code Security", "MEDIUM",
+                "DBA_PROCEDURES",
+                f"CURRENT_USER packages ({len(rows)}): {details}",
+                f"{len(rows)} custom package(s) use AUTHID CURRENT_USER. "
+                "These execute with the calling user's privileges rather "
+                "than the definer's, which can lead to privilege escalation "
+                "if the calling user has elevated access.",
+                "Review AUTHID CURRENT_USER packages to ensure they don't "
+                "perform privileged operations. Consider switching to "
+                "AUTHID DEFINER where appropriate.",
+                "CWE-269",
+            ))
+        else:
+            self._pass("ORA-CCS-010", "No custom CURRENT_USER packages")
+
+    # ═════════════════════════════════════════════════════════════════
     # Summary / Filter / Report
     # ═════════════════════════════════════════════════════════════════
 
@@ -3271,7 +3917,7 @@ def main():
         description=(
             f"Oracle E-Business Suite Security Audit Scanner v{VERSION} — "
             "Comprehensive security audit via live database queries "
-            "(125 checks across 11 domains)"
+            "(145 checks across 13 domains)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\

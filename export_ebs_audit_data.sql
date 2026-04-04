@@ -1,5 +1,5 @@
 -- ============================================================================
--- Oracle EBS Security Audit — Data Export Queries  v1.2.0
+-- Oracle EBS Security Audit — Data Export Queries  v1.4.0
 -- ============================================================================
 -- Run these queries against your Oracle EBS database and export each result
 -- set to the corresponding CSV file.  The offline scanner expects these exact
@@ -295,20 +295,26 @@ ORDER BY GRANTEE, GRANTED_ROLE;
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- 17. db_tab_privs.csv
---     Database object privilege grants (filtered to sensitive packages)
+--     Database object privilege grants (sensitive packages + PII tables)
 -- ────────────────────────────────────────────────────────────────────────────
 SELECT
     GRANTEE,
     TABLE_NAME,
     PRIVILEGE
 FROM DBA_TAB_PRIVS
-WHERE PRIVILEGE = 'EXECUTE'
+WHERE (PRIVILEGE = 'EXECUTE'
     AND TABLE_NAME IN (
         'UTL_FILE','UTL_HTTP','UTL_SMTP','UTL_TCP','UTL_INADDR',
         'DBMS_SQL','DBMS_JAVA','DBMS_BACKUP_RESTORE',
         'DBMS_SYS_SQL','DBMS_RANDOM','DBMS_LOB',
         'DBMS_ADVISOR','DBMS_OBFUSCATION_TOOLKIT'
-    )
+    ))
+    OR (PRIVILEGE = 'SELECT'
+    AND TABLE_NAME IN (
+        'PER_ALL_PEOPLE_F','PER_ALL_ASSIGNMENTS_F','PER_ADDRESSES',
+        'PER_PHONES','PER_CONTACT_RELATIONSHIPS',
+        'HZ_PARTIES','HZ_PERSON_PROFILES','HZ_CONTACT_POINTS','HZ_LOCATIONS'
+    ))
 ORDER BY TABLE_NAME, GRANTEE;
 
 
@@ -557,6 +563,155 @@ SELECT
 FROM FND_IREP_CLASSES
 WHERE DEPLOYED_FLAG = 'Y'
 ORDER BY CLASS_NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 35. ebs_creditcard_check.csv
+--     Credit card masking status check
+-- ────────────────────────────────────────────────────────────────────────────
+-- NOTE: Table may not exist if Oracle Payments is not installed. Skip on error.
+SELECT
+    COUNT(*) AS UNMASKED_COUNT
+FROM IBY_CREDITCARD
+WHERE CCNUMBER IS NOT NULL
+    AND LENGTH(CCNUMBER) > 6;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 36. ebs_nonprod_pii_check.csv
+--     Non-production PII masking check (real-length national identifiers)
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    COUNT(*) AS REAL_NID_COUNT
+FROM PER_ALL_PEOPLE_F
+WHERE NATIONAL_IDENTIFIER IS NOT NULL
+    AND LENGTH(NATIONAL_IDENTIFIER) >= 9
+    AND ROWNUM <= 1;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 37. ebs_bi_publisher.csv
+--     BI Publisher / XML Publisher data source definitions
+-- ────────────────────────────────────────────────────────────────────────────
+-- NOTE: Table may not exist on older EBS versions. Skip on error.
+SELECT
+    DATA_SOURCE_CODE,
+    DATA_SOURCE_STATUS
+FROM XDO_DS_DEFINITIONS_B
+ORDER BY DATA_SOURCE_CODE;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 38. ebs_dynamic_sql.csv
+--     PL/SQL objects using EXECUTE IMMEDIATE without bind variables
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT DISTINCT OWNER, NAME, TYPE
+FROM DBA_SOURCE
+WHERE OWNER NOT IN ('SYS','SYSTEM','MDSYS','CTXSYS','XDB','WMSYS','ORDSYS')
+    AND TYPE IN ('PACKAGE BODY','PROCEDURE','FUNCTION')
+    AND UPPER(TEXT) LIKE '%EXECUTE IMMEDIATE%'
+    AND TEXT NOT LIKE '%USING%'
+    AND ROWNUM <= 100
+ORDER BY OWNER, NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 39. ebs_hardcoded_creds.csv
+--     PL/SQL source with potential hardcoded credentials
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT DISTINCT OWNER, NAME, TYPE
+FROM DBA_SOURCE
+WHERE OWNER NOT IN ('SYS','SYSTEM','MDSYS','CTXSYS','XDB')
+    AND TYPE IN ('PACKAGE BODY','PROCEDURE','FUNCTION')
+    AND (UPPER(TEXT) LIKE '%PASSWORD%:=%''%'
+      OR UPPER(TEXT) LIKE '%PASSWORD%=>%''%'
+      OR UPPER(TEXT) LIKE '%PWD%:=%''%')
+    AND ROWNUM <= 100
+ORDER BY OWNER, NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 40. ebs_form_custom_rules.csv
+--     Form personalization rules (FND_FORM_CUSTOM_RULES)
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT
+    RULE_KEY,
+    DESCRIPTION,
+    ENABLED,
+    TRIGGER_EVENT
+FROM FND_FORM_CUSTOM_RULES
+ORDER BY RULE_KEY;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 41. ebs_fnd_user_pkg_callers.csv
+--     Custom PL/SQL objects calling FND_USER_PKG
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT DISTINCT OWNER, NAME, TYPE
+FROM DBA_SOURCE
+WHERE OWNER NOT IN ('SYS','SYSTEM','APPS','APPLSYS')
+    AND TYPE IN ('PACKAGE BODY','PROCEDURE','FUNCTION')
+    AND (UPPER(TEXT) LIKE '%FND_USER_PKG.CREATEUSER%'
+      OR UPPER(TEXT) LIKE '%FND_USER_PKG.UPDATEUSER%'
+      OR UPPER(TEXT) LIKE '%FND_USER_PKG.CHANGEPASSWORD%')
+    AND ROWNUM <= 100
+ORDER BY OWNER, NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 42. ebs_custom_triggers.csv
+--     Custom database triggers on security-critical tables
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT TRIGGER_NAME, TABLE_NAME, TRIGGER_TYPE, STATUS, OWNER
+FROM DBA_TRIGGERS
+WHERE TABLE_NAME IN ('FND_USER','FND_USER_RESP_GROUPS_DIRECT',
+    'FND_RESPONSIBILITY','FND_PROFILE_OPTION_VALUES',
+    'FND_LOGINS','AP_CHECKS_ALL')
+    AND OWNER NOT IN ('SYS','SYSTEM','APPS','APPLSYS')
+    AND STATUS = 'ENABLED'
+ORDER BY TABLE_NAME, TRIGGER_NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 43. ebs_custom_synonyms.csv
+--     Custom synonyms pointing to security/financial APPS tables
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT OWNER, SYNONYM_NAME, TABLE_OWNER, TABLE_NAME
+FROM DBA_SYNONYMS
+WHERE TABLE_NAME IN ('FND_USER','FND_USER_RESP_GROUPS_DIRECT',
+    'AP_CHECKS_ALL','AP_INVOICES_ALL','GL_JE_HEADERS','PER_ALL_PEOPLE_F')
+    AND OWNER NOT IN ('SYS','SYSTEM','APPS','APPLSYS','PUBLIC')
+    AND TABLE_OWNER = 'APPS'
+ORDER BY TABLE_NAME, OWNER;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 44. ebs_custom_objects.csv
+--     Custom PL/SQL objects (XX* prefix) in the APPS schema
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT OBJECT_NAME, OBJECT_TYPE, STATUS,
+    TO_CHAR(CREATED, 'YYYY-MM-DD') AS CREATED
+FROM DBA_OBJECTS
+WHERE OWNER = 'APPS'
+    AND OBJECT_NAME LIKE 'XX%'
+    AND OBJECT_TYPE IN ('PACKAGE','PACKAGE BODY','PROCEDURE',
+        'FUNCTION','TRIGGER','VIEW')
+    AND STATUS = 'VALID'
+ORDER BY OBJECT_NAME;
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 45. ebs_authid_current_user.csv
+--     Custom packages with AUTHID CURRENT_USER
+-- ────────────────────────────────────────────────────────────────────────────
+SELECT OBJECT_NAME, OWNER
+FROM DBA_PROCEDURES
+WHERE AUTHID = 'CURRENT_USER'
+    AND OWNER NOT IN ('SYS','SYSTEM','MDSYS','CTXSYS','XDB',
+        'WMSYS','ORDSYS','EXFSYS')
+    AND OBJECT_TYPE = 'PACKAGE'
+    AND OBJECT_NAME LIKE 'XX%'
+ORDER BY OWNER, OBJECT_NAME;
 
 
 -- ============================================================================

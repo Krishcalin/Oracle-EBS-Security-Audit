@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Oracle E-Business Suite Offline Security Audit Scanner v1.2.0
+Oracle E-Business Suite Offline Security Audit Scanner v1.4.0
 
 Analyzes CSV exports from Oracle EBS databases without requiring live
-database access.  Same 125 checks as the online scanner, zero dependencies.
+database access.  Same 145 checks as the online scanner, zero dependencies.
 
 Usage:
     1. Run the SQL queries in  export_ebs_audit_data.sql  against your EBS
@@ -23,7 +23,7 @@ import os
 import sys
 import textwrap
 
-__version__ = "1.2.0"
+__version__ = "1.4.0"
 VERSION = __version__
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -68,6 +68,19 @@ CSV_FILES = [
     ("ebs_dff_config.csv",           False, "Descriptive flexfield config"),
     ("ebs_xml_gateway.csv",          False, "XML Gateway trading partners"),
     ("ebs_irep_services.csv",        False, "Integration Repository services"),
+    # Phase 3 additions — Data Privacy & PII
+    ("ebs_creditcard_check.csv",     False, "Credit card masking status"),
+    ("ebs_nonprod_pii_check.csv",    False, "Non-prod PII masking check"),
+    ("ebs_bi_publisher.csv",         False, "BI Publisher data source definitions"),
+    # Phase 4 additions — Custom Code Security
+    ("ebs_dynamic_sql.csv",          False, "PL/SQL dynamic SQL without bind vars"),
+    ("ebs_hardcoded_creds.csv",      False, "Hardcoded credentials in PL/SQL"),
+    ("ebs_form_custom_rules.csv",    False, "Form personalization rules"),
+    ("ebs_fnd_user_pkg_callers.csv", False, "Custom code calling FND_USER_PKG"),
+    ("ebs_custom_triggers.csv",      False, "Custom triggers on security tables"),
+    ("ebs_custom_synonyms.csv",      False, "Custom synonyms to security tables"),
+    ("ebs_custom_objects.csv",       False, "Custom objects in APPS schema"),
+    ("ebs_authid_current_user.csv",  False, "Packages with AUTHID CURRENT_USER"),
 ]
 
 
@@ -407,6 +420,8 @@ class OracleEBSOfflineScanner:
             ("Patching & Versions",          self._check_patching),
             ("Workflow & Approvals",         self._check_workflow),
             ("Application Configuration",   self._check_app_config),
+            ("Data Privacy & PII",          self._check_data_privacy),
+            ("Custom Code Security",        self._check_custom_code),
         ]
 
         for name, fn in groups:
@@ -2620,6 +2635,498 @@ class OracleEBSOfflineScanner:
             self._vprint("  ebs_irep_services.csv not available, skipping")
 
     # ═════════════════════════════════════════════════════════════════
+    # Check Group 12 — Data Privacy & PII Protection  (ORA-DPP-001..010)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _check_data_privacy(self):
+        active_resps = self._get_active_user_resps()
+
+        # ORA-DPP-001  Non-standard schemas with SELECT on HR PII tables
+        db_tab_privs = self._data.get("db_tab_privs", [])
+        hr_tables = {"PER_ALL_PEOPLE_F", "PER_ALL_ASSIGNMENTS_F",
+                      "PER_ADDRESSES", "PER_PHONES", "PER_CONTACT_RELATIONSHIPS"}
+        hr_excluded = {"SYS", "SYSTEM", "APPS", "APPLSYS", "HR", "PER", "PUBLIC"}
+        hr_grants = [
+            r for r in db_tab_privs
+            if r.get("TABLE_NAME", "").upper() in hr_tables
+            and r.get("PRIVILEGE") == "SELECT"
+            and r.get("GRANTEE", "").upper() not in hr_excluded
+        ]
+        if hr_grants:
+            grantees = sorted(set(r["GRANTEE"] for r in hr_grants))
+            details = ", ".join(grantees[:10])
+            self._add(Finding(
+                "ORA-DPP-001",
+                "Non-standard schemas with SELECT on HR PII tables",
+                "Data Privacy", "HIGH",
+                "db_tab_privs.csv",
+                f"HR PII table grantees ({len(grantees)}): {details}",
+                f"{len(grantees)} non-standard schema(s) have direct SELECT "
+                "on HR tables containing personal data.",
+                "Revoke direct SELECT on HR PII tables from non-essential schemas.",
+                "CWE-284",
+            ))
+        elif db_tab_privs:
+            self._pass("ORA-DPP-001", "HR PII table access restricted")
+        else:
+            self._vprint("  db_tab_privs.csv not available, skipping ORA-DPP-001")
+
+        # ORA-DPP-002  Customer PII — grants on HZ_PARTIES
+        cust_tables = {"HZ_PARTIES", "HZ_PERSON_PROFILES",
+                        "HZ_CONTACT_POINTS", "HZ_LOCATIONS"}
+        cust_excluded = {"SYS", "SYSTEM", "APPS", "APPLSYS", "AR", "HZ", "PUBLIC"}
+        cust_grants = [
+            r for r in db_tab_privs
+            if r.get("TABLE_NAME", "").upper() in cust_tables
+            and r.get("PRIVILEGE") == "SELECT"
+            and r.get("GRANTEE", "").upper() not in cust_excluded
+        ]
+        if cust_grants:
+            grantees = sorted(set(r["GRANTEE"] for r in cust_grants))
+            details = ", ".join(grantees[:10])
+            self._add(Finding(
+                "ORA-DPP-002",
+                "Non-standard schemas with SELECT on customer PII tables",
+                "Data Privacy", "HIGH",
+                "db_tab_privs.csv",
+                f"Customer PII grantees ({len(grantees)}): {details}",
+                f"{len(grantees)} non-standard schema(s) have SELECT on "
+                "customer/party tables.",
+                "Revoke direct SELECT. Route access through TCA APIs.",
+                "CWE-284",
+            ))
+        elif db_tab_privs:
+            self._pass("ORA-DPP-002", "Customer PII table access restricted")
+
+        # ORA-DPP-003  Credit card data — IBY_CREDITCARD
+        cc_data = self._data.get("ebs_creditcard_check", [])
+        if cc_data:
+            has_unmasked = any(
+                r.get("UNMASKED_COUNT", "0") != "0" for r in cc_data
+            )
+            if has_unmasked:
+                self._add(Finding(
+                    "ORA-DPP-003",
+                    "Credit card numbers potentially stored unmasked",
+                    "Data Privacy", "CRITICAL",
+                    "ebs_creditcard_check.csv",
+                    "CCNUMBER column contains data > 6 chars",
+                    "The IBY_CREDITCARD table appears to contain unmasked "
+                    "credit card numbers, violating PCI-DSS.",
+                    "Enable Oracle Payments encryption. Verify CCNUMBER "
+                    "stores only masked/tokenized values.",
+                    "CWE-312",
+                ))
+            else:
+                self._pass("ORA-DPP-003", "Credit card data appears masked")
+        else:
+            self._vprint("  ebs_creditcard_check.csv not available, skipping")
+
+        # ORA-DPP-004  SSN / National ID access — excessive HR/Payroll users
+        hr_keywords = ("Human Resources", "HRMS", "US Super HRMS", "Payroll")
+        hr_users = set()
+        for r in active_resps:
+            rname = r.get("RESPONSIBILITY_NAME", "")
+            if any(kw in rname for kw in hr_keywords):
+                hr_users.add(r["USER_NAME"])
+        if len(hr_users) > 15:
+            names = ", ".join(sorted(hr_users)[:10])
+            self._add(Finding(
+                "ORA-DPP-004",
+                "Excessive users with access to SSN/NID data",
+                "Data Privacy", "HIGH",
+                "ebs_user_responsibilities.csv",
+                f"HR/Payroll users ({len(hr_users)}): {names} ...",
+                f"{len(hr_users)} users have HR/Payroll responsibilities.",
+                "Restrict to users whose job function requires PII access.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-DPP-004", f"HR/Payroll access count acceptable ({len(hr_users)})")
+
+        # ORA-DPP-005  Non-production data masking
+        instance = self._instance_name.upper() if self._instance_name else ""
+        is_nonprod = any(kw in instance for kw in (
+            "DEV", "TEST", "QA", "UAT", "STG", "STAGING", "SANDBOX",
+            "TRAIN", "DEMO", "CLONE", "COPY",
+        ))
+        nonprod_pii = self._data.get("ebs_nonprod_pii_check", [])
+        if is_nonprod and nonprod_pii:
+            has_real = any(
+                r.get("REAL_NID_COUNT", "0") != "0" for r in nonprod_pii
+            )
+            if has_real:
+                self._add(Finding(
+                    "ORA-DPP-005",
+                    "Non-production instance may contain unmasked PII",
+                    "Data Privacy", "HIGH",
+                    "ebs_nonprod_pii_check.csv",
+                    f"Instance '{self._instance_name}' appears non-production, "
+                    "NATIONAL_IDENTIFIER contains real-length data",
+                    "Non-production instance contains unmasked personal identifiers.",
+                    "Apply data masking before refreshing non-production.",
+                    "CWE-200",
+                ))
+            else:
+                self._pass("ORA-DPP-005", "Non-prod PII appears masked")
+        elif is_nonprod:
+            self._vprint("  ebs_nonprod_pii_check.csv not available, skipping")
+        else:
+            self._pass("ORA-DPP-005", "Production instance — masking check N/A")
+
+        # ORA-DPP-006  Data retention / purge programs
+        programs = self._data.get("ebs_concurrent_programs", [])
+        purge_progs = [
+            p for p in programs
+            if p.get("ENABLED_FLAG") == "Y"
+            and any(kw in p.get("CONCURRENT_PROGRAM_NAME", "").upper()
+                    for kw in ("PURGE", "ARCHIVE", "ANONYMIZ", "MASK"))
+        ]
+        if programs and not purge_progs:
+            self._add(Finding(
+                "ORA-DPP-006",
+                "No data purge/archive programs enabled",
+                "Data Privacy", "MEDIUM",
+                "ebs_concurrent_programs.csv",
+                "Purge/archive programs: 0",
+                "No enabled programs for data purge or archival found.",
+                "Enable and schedule data purge programs.",
+                "CWE-284",
+            ))
+        elif purge_progs:
+            self._pass("ORA-DPP-006", f"Purge/archive programs: {len(purge_progs)}")
+
+        # ORA-DPP-007  Fine-Grained Auditing on PII columns
+        db_fga = self._data.get("db_fga_policies", [])
+        pii_tables_fga = {"PER_ALL_PEOPLE_F", "HZ_PARTIES", "IBY_CREDITCARD",
+                           "AP_SUPPLIERS", "PER_ADDRESSES"}
+        fga_on_pii = [
+            r for r in db_fga
+            if r.get("OBJECT_NAME", "").upper() in pii_tables_fga
+            and r.get("ENABLED", "").upper() == "YES"
+        ]
+        if db_fga and not fga_on_pii:
+            self._add(Finding(
+                "ORA-DPP-007",
+                "No FGA policies on PII tables",
+                "Data Privacy", "MEDIUM",
+                "db_fga_policies.csv",
+                "FGA on PII tables: 0",
+                "No Fine-Grained Auditing policies on PII tables.",
+                "Create FGA policies on sensitive PII columns.",
+                "CWE-778",
+            ))
+        elif fga_on_pii:
+            self._pass("ORA-DPP-007", f"FGA on PII tables: {len(fga_on_pii)}")
+        else:
+            self._vprint("  db_fga_policies.csv not available, skipping ORA-DPP-007")
+
+        # ORA-DPP-008  BI Publisher data sources with PII access
+        bi_sources = self._data.get("ebs_bi_publisher", [])
+        hr_bi = [
+            s for s in bi_sources
+            if any(kw in s.get("DATA_SOURCE_CODE", "").upper()
+                   for kw in ("PER", "HR", "PAYROLL", "EMPLOYEE"))
+        ]
+        if len(hr_bi) > 20:
+            self._add(Finding(
+                "ORA-DPP-008",
+                "Excessive BI Publisher data sources with HR/PII access",
+                "Data Privacy", "MEDIUM",
+                "ebs_bi_publisher.csv",
+                f"HR-related BI Publisher sources: {len(hr_bi)}",
+                f"{len(hr_bi)} BI Publisher sources reference HR/payroll data.",
+                "Review and restrict HR BI Publisher reports.",
+                "CWE-284",
+            ))
+        elif bi_sources:
+            self._pass("ORA-DPP-008", f"BI Publisher HR sources: {len(hr_bi)}")
+        else:
+            self._vprint("  ebs_bi_publisher.csv not available, skipping")
+
+        # ORA-DPP-009  PER_ALL_PEOPLE_F access breadth (HRMS app users)
+        hrms_users = set()
+        for r in active_resps:
+            if r.get("RESPONSIBILITY_APPLICATION_ID") == "800":
+                hrms_users.add(r["USER_NAME"])
+        if len(hrms_users) > 25:
+            self._add(Finding(
+                "ORA-DPP-009",
+                "Broad HRMS application access (PER_ALL_PEOPLE_F exposure)",
+                "Data Privacy", "HIGH",
+                "ebs_user_responsibilities.csv",
+                f"Users with HRMS app responsibilities: {len(hrms_users)}",
+                f"{len(hrms_users)} users have HRMS application responsibilities.",
+                "Implement HRMS Security Profiles to restrict access.",
+                "CWE-284",
+            ))
+        else:
+            self._pass("ORA-DPP-009", f"HRMS access count acceptable ({len(hrms_users)})")
+
+        # ORA-DPP-010  Data extract interfaces without controls
+        extract_progs = [
+            p for p in programs
+            if p.get("ENABLED_FLAG") == "Y"
+            and p.get("EXECUTION_METHOD_CODE") in ("H", "K", "L")
+            and any(kw in p.get("CONCURRENT_PROGRAM_NAME", "").upper()
+                    for kw in ("EXTRACT", "EXPORT", "DOWNLOAD", "OUTBOUND"))
+        ]
+        if len(extract_progs) > 10:
+            names = ", ".join(
+                p["CONCURRENT_PROGRAM_NAME"] for p in extract_progs[:10]
+            )
+            self._add(Finding(
+                "ORA-DPP-010",
+                "Excessive data extract programs enabled",
+                "Data Privacy", "MEDIUM",
+                "ebs_concurrent_programs.csv",
+                f"Extract/export programs ({len(extract_progs)}): {names} ...",
+                f"{len(extract_progs)} data extract programs are enabled.",
+                "Restrict extract programs to appropriate request groups.",
+                "CWE-200",
+            ))
+        elif programs:
+            self._pass("ORA-DPP-010", f"Extract programs: {len(extract_progs)}")
+
+    # ═════════════════════════════════════════════════════════════════
+    # Check Group 13 — Custom Code Security  (ORA-CCS-001 .. 010)
+    # ═════════════════════════════════════════════════════════════════
+
+    def _check_custom_code(self):
+        programs = self._data.get("ebs_concurrent_programs", [])
+        requests = self._data.get("ebs_concurrent_requests", [])
+
+        # ORA-CCS-001  PL/SQL injection — dynamic SQL without bind variables
+        dyn_sql = self._data.get("ebs_dynamic_sql", [])
+        if dyn_sql:
+            details = "; ".join(
+                f"{r.get('OWNER','?')}.{r.get('NAME','?')}"
+                for r in dyn_sql[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-001",
+                "Dynamic SQL without bind variables detected",
+                "Custom Code Security", "CRITICAL",
+                "ebs_dynamic_sql.csv",
+                f"EXECUTE IMMEDIATE without USING ({len(dyn_sql)}): {details}",
+                f"{len(dyn_sql)} PL/SQL object(s) use EXECUTE IMMEDIATE "
+                "without bind variables.",
+                "Refactor to use bind variables via the USING clause.",
+                "CWE-89",
+            ))
+        else:
+            if self._data.get("ebs_dynamic_sql") is not None:
+                self._pass("ORA-CCS-001", "No dynamic SQL injection patterns")
+            else:
+                self._vprint("  ebs_dynamic_sql.csv not available, skipping")
+
+        # ORA-CCS-002  Hardcoded credentials in PL/SQL source
+        hardcoded = self._data.get("ebs_hardcoded_creds", [])
+        if hardcoded:
+            details = "; ".join(
+                f"{r.get('OWNER','?')}.{r.get('NAME','?')}"
+                for r in hardcoded[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-002",
+                "Hardcoded credentials in PL/SQL source code",
+                "Custom Code Security", "CRITICAL",
+                "ebs_hardcoded_creds.csv",
+                f"Hardcoded credentials ({len(hardcoded)}): {details}",
+                f"{len(hardcoded)} PL/SQL object(s) contain hardcoded "
+                "passwords or secrets.",
+                "Move credentials to Oracle Wallet or FND_VAULT.",
+                "CWE-798",
+            ))
+        elif self._data.get("ebs_hardcoded_creds") is not None:
+            self._pass("ORA-CCS-002", "No hardcoded credentials found")
+        else:
+            self._vprint("  ebs_hardcoded_creds.csv not available, skipping")
+
+        # ORA-CCS-003  Custom form personalization rules
+        form_rules = self._data.get("ebs_form_custom_rules", [])
+        enabled_rules = [r for r in form_rules if r.get("ENABLED") == "Y"]
+        if len(enabled_rules) > 50:
+            self._add(Finding(
+                "ORA-CCS-003",
+                "Excessive custom form personalization rules",
+                "Custom Code Security", "MEDIUM",
+                "ebs_form_custom_rules.csv",
+                f"Active custom form rules: {len(enabled_rules)}",
+                f"{len(enabled_rules)} active form personalization rules found.",
+                "Review all rules for security implications.",
+                "CWE-284",
+            ))
+        elif form_rules:
+            self._pass("ORA-CCS-003", f"Custom form rules: {len(enabled_rules)}")
+        else:
+            self._vprint("  ebs_form_custom_rules.csv not available, skipping")
+
+        # ORA-CCS-004  Custom code calling FND_USER_PKG
+        fnd_callers = self._data.get("ebs_fnd_user_pkg_callers", [])
+        if fnd_callers:
+            details = "; ".join(
+                f"{r.get('OWNER','?')}.{r.get('NAME','?')}"
+                for r in fnd_callers[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-004",
+                "Custom code calling FND_USER_PKG (user management API)",
+                "Custom Code Security", "HIGH",
+                "ebs_fnd_user_pkg_callers.csv",
+                f"FND_USER_PKG callers ({len(fnd_callers)}): {details}",
+                f"{len(fnd_callers)} custom PL/SQL object(s) call FND_USER_PKG.",
+                "Review for proper authorization checks and audit logging.",
+                "CWE-269",
+            ))
+        elif self._data.get("ebs_fnd_user_pkg_callers") is not None:
+            self._pass("ORA-CCS-004", "No custom FND_USER_PKG usage")
+        else:
+            self._vprint("  ebs_fnd_user_pkg_callers.csv not available, skipping")
+
+        # ORA-CCS-005  Custom concurrent programs with OS execution
+        custom_shell = [
+            p for p in programs
+            if p.get("EXECUTION_METHOD_CODE") in ("H", "K")
+            and p.get("ENABLED_FLAG") == "Y"
+            and p.get("CONCURRENT_PROGRAM_NAME", "").startswith("XX")
+        ]
+        if custom_shell:
+            names = ", ".join(
+                p["CONCURRENT_PROGRAM_NAME"] for p in custom_shell[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-005",
+                "Custom concurrent programs with OS/shell execution",
+                "Custom Code Security", "HIGH",
+                "ebs_concurrent_programs.csv",
+                f"Custom shell programs ({len(custom_shell)}): {names}",
+                f"{len(custom_shell)} custom concurrent program(s) execute "
+                "shell scripts or host commands.",
+                "Review input validation and restrict request group access.",
+                "CWE-78",
+            ))
+        elif programs:
+            self._pass("ORA-CCS-005", "No custom shell programs")
+
+        # ORA-CCS-006  FNDLOAD/FNDSLOAD/WFLOAD recently executed
+        loader_names = {"FNDLOAD", "FNDSLOAD", "WFLOAD"}
+        loader_runs = [
+            r for r in requests
+            if r.get("CONCURRENT_PROGRAM_NAME", "").upper() in loader_names
+            and (self._days_ago(r.get("ACTUAL_START_DATE", "")) or 999) <= 90
+        ]
+        if loader_runs:
+            self._add(Finding(
+                "ORA-CCS-006",
+                "FNDLOAD/FNDSLOAD/WFLOAD executed recently",
+                "Custom Code Security", "MEDIUM",
+                "ebs_concurrent_requests.csv",
+                f"Loader executions (90d): {len(loader_runs)}",
+                f"{len(loader_runs)} loader executions in the last 90 days.",
+                "Verify each execution had change management approval.",
+                "CWE-284",
+            ))
+        elif requests:
+            self._pass("ORA-CCS-006", "No recent loader executions")
+
+        # ORA-CCS-007  Custom triggers on security tables
+        triggers = self._data.get("ebs_custom_triggers", [])
+        if triggers:
+            details = "; ".join(
+                f"{r.get('TRIGGER_NAME','?')} on {r.get('TABLE_NAME','?')}"
+                for r in triggers[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-007",
+                "Custom triggers on security tables",
+                "Custom Code Security", "HIGH",
+                "ebs_custom_triggers.csv",
+                f"Custom triggers ({len(triggers)}): {details}",
+                f"{len(triggers)} custom trigger(s) on security-critical tables.",
+                "Review and remove unauthorized triggers.",
+                "CWE-284",
+            ))
+        elif self._data.get("ebs_custom_triggers") is not None:
+            self._pass("ORA-CCS-007", "No custom triggers on security tables")
+        else:
+            self._vprint("  ebs_custom_triggers.csv not available, skipping")
+
+        # ORA-CCS-008  Custom synonyms bypassing EBS security
+        synonyms = self._data.get("ebs_custom_synonyms", [])
+        if synonyms:
+            details = "; ".join(
+                f"{r.get('OWNER','?')}.{r.get('SYNONYM_NAME','?')}"
+                f"->{r.get('TABLE_NAME','?')}"
+                for r in synonyms[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-008",
+                "Custom synonyms pointing to security/financial tables",
+                "Custom Code Security", "MEDIUM",
+                "ebs_custom_synonyms.csv",
+                f"Custom synonyms ({len(synonyms)}): {details}",
+                f"{len(synonyms)} custom synonym(s) point to security tables.",
+                "Review and remove unnecessary synonyms.",
+                "CWE-269",
+            ))
+        elif self._data.get("ebs_custom_synonyms") is not None:
+            self._pass("ORA-CCS-008", "No unauthorized custom synonyms")
+        else:
+            self._vprint("  ebs_custom_synonyms.csv not available, skipping")
+
+        # ORA-CCS-009  Custom objects in APPS schema
+        custom_objs = self._data.get("ebs_custom_objects", [])
+        cnt = len(custom_objs)
+        if cnt > 200:
+            self._add(Finding(
+                "ORA-CCS-009",
+                "Large volume of custom objects in APPS schema",
+                "Custom Code Security", "MEDIUM",
+                "ebs_custom_objects.csv",
+                f"Custom APPS objects (XX*): {cnt}",
+                f"{cnt} custom PL/SQL objects in the APPS schema.",
+                "Conduct periodic security code reviews.",
+                "CWE-1104",
+            ))
+        elif cnt > 0:
+            self._add(Finding(
+                "ORA-CCS-009",
+                "Custom objects in APPS schema inventory",
+                "Custom Code Security", "INFO",
+                "ebs_custom_objects.csv",
+                f"Custom APPS objects (XX*): {cnt}",
+                f"{cnt} custom PL/SQL object(s) in the APPS schema.",
+                "Periodically review custom code.",
+            ))
+        elif self._data.get("ebs_custom_objects") is not None:
+            self._pass("ORA-CCS-009", "No custom objects in APPS schema")
+        else:
+            self._vprint("  ebs_custom_objects.csv not available, skipping")
+
+        # ORA-CCS-010  Custom packages with AUTHID CURRENT_USER
+        authid_pkgs = self._data.get("ebs_authid_current_user", [])
+        if authid_pkgs:
+            details = "; ".join(
+                f"{r.get('OWNER','?')}.{r.get('OBJECT_NAME','?')}"
+                for r in authid_pkgs[:10]
+            )
+            self._add(Finding(
+                "ORA-CCS-010",
+                "Custom packages with AUTHID CURRENT_USER",
+                "Custom Code Security", "MEDIUM",
+                "ebs_authid_current_user.csv",
+                f"CURRENT_USER packages ({len(authid_pkgs)}): {details}",
+                f"{len(authid_pkgs)} custom package(s) use AUTHID CURRENT_USER.",
+                "Review for privilege escalation risk.",
+                "CWE-269",
+            ))
+        elif self._data.get("ebs_authid_current_user") is not None:
+            self._pass("ORA-CCS-010", "No custom CURRENT_USER packages")
+        else:
+            self._vprint("  ebs_authid_current_user.csv not available, skipping")
+
+    # ═════════════════════════════════════════════════════════════════
     # Summary / Filter / Report
     # ═════════════════════════════════════════════════════════════════
 
@@ -2904,7 +3411,7 @@ def main():
         description=(
             f"Oracle EBS Offline Security Audit Scanner v{VERSION} — "
             "Analyze CSV exports from Oracle EBS databases without "
-            "requiring live database access (125 checks, zero dependencies)"
+            "requiring live database access (145 checks, zero dependencies)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
