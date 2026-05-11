@@ -1,0 +1,22 @@
+CONCURRENT_PROGRAM_NAME,USER_CONCURRENT_PROGRAM_NAME,EXECUTION_METHOD_CODE,ENABLED_FLAG
+FNDCPASS,Change APPS Password,I,Y
+FNDSLOAD,FNDLOAD Loader,I,Y
+FNDLOAD,Generic Loader,I,Y
+WFLOAD,Workflow Loader,I,Y
+CONCSUB,Concurrent Submit,I,Y
+FNDSCARU,Compile Security,I,Y
+FNDMDGEN,Generate Messages,I,Y
+APXIIMPT,Payables Open Interface Import,I,Y
+ARXAGRW,Auto Lockbox,I,Y
+GLPPOS,Post Journals,I,Y
+POXPOPDOI,Purchase Order Import,I,Y
+INVTTMTX,Material Transaction Import,I,Y
+CUSTOM_HOST_PROG1,Custom Data Extract,H,Y
+CUSTOM_HOST_PROG2,Custom File Transfer,H,Y
+CUSTOM_HOST_PROG3,OS Command Runner,H,Y
+CUSTOM_HOST_PROG4,Backup Script Executor,H,Y
+CUSTOM_HOST_PROG5,Log Cleanup Utility,H,Y
+RAXTRX,Auto Invoice,I,Y
+PYUGEN,Payroll Run,I,Y
+XLOLOAD,XML Publisher Loader,I,Y
+AABORDFR,Abort Order Process,I,Y

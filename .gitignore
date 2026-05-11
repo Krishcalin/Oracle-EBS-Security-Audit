@@ -20,3 +20,33 @@ rad.json
 *.flf
 #Test results file
 TestResults.xml
+
+### Python ###
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+.coverage
+htmlcov/
+
+### Editor / OS ###
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+### Project — sensitive scanner output ###
+evidence/
+reports/local/
+*.log

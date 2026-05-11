@@ -1,0 +1,25 @@
+REQUEST_GROUP_NAME,CONCURRENT_PROGRAM_NAME,REQUEST_UNIT_TYPE
+System Administration Reports,FNDCPASS,P
+System Administration Reports,FNDSLOAD,P
+System Administration Reports,FNDLOAD,P
+System Administration Reports,WFLOAD,P
+System Administration Reports,CONCSUB,P
+Finance Reports Group,APXIIMPT,P
+Finance Reports Group,ARXAGRW,P
+Finance Reports Group,GLPPOS,P
+Finance Reports Group,FNDCPASS,P
+Finance Reports Group,FNDLOAD,P
+Finance Reports Group,XLOLOAD,P
+Purchasing Reports Group,POXPOPDOI,P
+Purchasing Reports Group,FNDSCARU,P
+Purchasing Reports Group,CONCSUB,P
+Inventory Request Group,INVTTMTX,P
+Inventory Request Group,AABORDFR,P
+All AP Programs,NULL,A
+All GL Programs,NULL,A
+All PO Programs,NULL,A
+Custom Operations Group,CUSTOM_HOST_PROG1,P
+Custom Operations Group,CUSTOM_HOST_PROG2,P
+Custom Operations Group,FNDLOAD,P
+HR Reports Group,PYUGEN,P
+HR Reports Group,FNDMDGEN,P

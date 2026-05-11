@@ -1,0 +1,2 @@
+INSTANCE_NAME,HOST_NAME,DB_VERSION,EBS_VERSION
+EBSPROD,dbhost01.acmecorp.com,Oracle Database 12c Enterprise Edition Release 12.1.0.2.0,12.1.3

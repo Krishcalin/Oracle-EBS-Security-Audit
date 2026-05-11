@@ -1,0 +1,51 @@
+USER_NAME,DESCRIPTION,START_DATE,END_DATE,LAST_LOGON_DATE,PASSWORD_DATE,CREATION_DATE,EMPLOYEE_ID,PERSON_PARTY_ID,EMAIL_ADDRESS,EMPLOYEE_CURRENT_FLAG
+SYSADMIN,System Administrator,2010-01-01,,2026-03-30,2010-01-01,2010-01-01,,,sysadmin@acmecorp.com,
+GUEST,Guest User,2010-01-01,,2025-06-15,2010-01-01,2010-01-01,,,guest@acmecorp.com,
+OPERATIONS,Operations User,2010-01-01,,,2010-01-01,2010-01-01,,,operations@acmecorp.com,
+INITIAL_SETUP,Initial Setup,2010-01-01,,,2010-01-01,2010-01-01,,,setup@acmecorp.com,
+ANONYMOUS,Anonymous User,2010-01-01,,,2010-01-01,2010-01-01,,,anon@acmecorp.com,
+AUTOINSTALL,Auto Install,2010-01-01,,,2010-01-01,2010-01-01,,,autoinstall@acmecorp.com,
+IBEGUEST,iStore Guest,2010-01-01,,2024-12-01,2010-01-01,2010-01-01,,,ibeguest@acmecorp.com,
+JSMITH,John Smith - Finance,2018-03-15,,2026-03-28,2026-01-15,2018-03-15,1001,2001,jsmith@acmecorp.com,Y
+MJOHNSON,Mary Johnson - AP Manager,2017-06-01,,2026-03-25,2025-11-20,2017-06-01,1002,2002,mjohnson@acmecorp.com,Y
+RWILLIAMS,Robert Williams - AR Lead,2019-01-10,,2026-03-27,2025-12-10,2019-01-10,1003,2003,rwilliams@acmecorp.com,Y
+ABROWN,Alice Brown - Purchasing,2020-04-20,,2026-03-20,2025-10-05,2020-04-20,1004,2004,abrown@acmecorp.com,Y
+DLEE,David Lee - IT Admin,2016-08-12,,2026-03-29,2026-02-01,2016-08-12,1005,2005,dlee@acmecorp.com,Y
+KPATEL,Kavita Patel - HR Director,2015-11-01,,2026-03-26,2025-09-15,2015-11-01,1006,2006,kpatel@acmecorp.com,Y
+CGARCIA,Carlos Garcia - GL Manager,2018-07-22,,2026-03-22,2025-08-30,2018-07-22,1007,2007,cgarcia@acmecorp.com,Y
+TWONG,Teresa Wong - Inventory,2021-02-14,,2026-03-15,2025-07-20,2021-02-14,1008,2008,twong@acmecorp.com,Y
+BMARTIN,Bill Martin - Projects,2019-09-05,,2026-03-10,2025-06-01,2019-09-05,1009,2009,bmartin@acmecorp.com,Y
+SHARED_AP,Shared AP Processing,2020-01-01,,2026-03-01,2020-01-01,2020-01-01,,,shared_ap@acmecorp.com,
+GENERIC_REPORT,Generic Reporting Account,2019-05-15,,2026-02-15,2019-05-15,2019-05-15,,,reports@acmecorp.com,
+TESTUSER_QA,QA Test User,2022-03-01,,2026-01-10,2022-03-01,2022-03-01,,,qa@acmecorp.com,
+TEMPUSER_AUDIT,Temporary Audit Access,2025-01-01,,2026-03-05,2025-01-01,2025-01-01,,,audit_temp@acmecorp.com,
+MWILSON,Mike Wilson - Terminated,2017-04-10,,2025-12-01,2025-06-15,2017-04-10,1010,2010,mwilson@acmecorp.com,N
+SCHEN,Susan Chen - Terminated,2018-09-20,,2025-11-15,2025-05-10,2018-09-20,1011,2011,schen@acmecorp.com,N
+JPARK,James Park - Terminated,2019-12-01,,2025-10-20,2025-04-01,2019-12-01,1012,2012,jpark@acmecorp.com,N
+RTHOMAS,Rachel Thomas - Left Company,2020-06-15,,2025-08-30,2025-03-20,2020-06-15,1013,2013,rthomas@acmecorp.com,N
+LNGUYEN,Lisa Nguyen - Inactive,2018-02-28,,2025-08-10,2025-01-15,2018-02-28,1014,2014,lnguyen@acmecorp.com,Y
+PWRIGHT,Paul Wright - Inactive,2017-10-05,,2025-07-20,2024-12-01,2017-10-05,1015,2015,pwright@acmecorp.com,Y
+HKIM,Helen Kim - Inactive,2019-04-15,,2025-06-30,2024-11-10,2019-04-15,1016,2016,hkim@acmecorp.com,Y
+ERODRIGUEZ,Elena Rodriguez - Inactive,2020-01-20,,2025-09-05,2024-10-20,2020-01-20,1017,2017,erodriguez@acmecorp.com,Y
+DFISCHER,Diana Fischer - Inactive,2016-07-12,,2025-05-15,2024-09-01,2016-07-12,1018,2018,dfischer@acmecorp.com,Y
+ORPHAN_USER1,Vendor Portal Access,2022-06-01,,,2022-06-01,2022-06-01,,,vendor1@external.com,
+ORPHAN_USER2,Contractor - Phase 1,2023-01-15,,2026-03-20,2023-01-15,2023-01-15,,,contractor1@external.com,
+ORPHAN_USER3,External Auditor,2023-06-01,,2026-02-28,2023-06-01,2023-06-01,,,auditor@external.com,
+ORPHAN_USER4,Consultant Access,2024-01-10,,2026-03-15,2024-01-10,2024-01-10,,,consultant@external.com,
+ORPHAN_USER5,Offshore Support,2024-03-01,,2026-03-25,2024-03-01,2024-03-01,,,offshore1@outsource.com,
+NEVER_LOGIN1,New Hire - Never Used,2025-10-01,,,,,1019,2019,newhire1@acmecorp.com,Y
+NEVER_LOGIN2,Provisioned But Unused,2025-08-15,,,,,1020,2020,newhire2@acmecorp.com,Y
+NEVER_LOGIN3,Service Account Created,2025-07-01,,,,,,,svc_account@acmecorp.com,
+NEVER_LOGIN4,Batch Process User,2025-06-01,,,,,,,batch@acmecorp.com,
+NREEVES,Nancy Reeves - Finance Analyst,2021-05-10,,2026-03-29,2025-12-01,2021-05-10,1021,2021,nreeves@acmecorp.com,Y
+OCONNOR,Oliver Connor - AP Clerk,2022-08-20,,2026-03-28,2026-01-10,2022-08-20,1022,2022,oconnor@acmecorp.com,Y
+PBAKER,Priya Baker - Procurement,2020-11-15,,2026-03-27,2025-11-01,2020-11-15,1023,2023,pbaker@acmecorp.com,Y
+QADAMS,Quincy Adams - IT Support,2019-03-25,,2026-03-26,2026-02-15,2019-03-25,1024,2024,qadams@acmecorp.com,Y
+RJONES,Rita Jones - Cash Mgmt,2021-07-12,,2026-03-25,2025-10-20,2021-07-12,1025,2025,rjones@acmecorp.com,Y
+STURNER,Sam Turner - Fixed Assets,2022-02-01,,2026-03-24,2025-09-15,2022-02-01,1026,2026,sturner@acmecorp.com,Y
+UVARGAS,Uma Vargas - Order Mgmt,2020-09-10,,2026-03-23,2025-08-01,2020-09-10,1027,2027,uvargas@acmecorp.com,Y
+VHARRIS,Vince Harris - Payroll,2019-06-18,,2026-03-22,2025-07-10,2019-06-18,1028,2028,vharris@acmecorp.com,Y
+WCLARK,Wendy Clark - GL Analyst,2021-01-05,,2026-03-21,2025-06-20,2021-01-05,1029,2029,wclark@acmecorp.com,Y
+XYOUNG,Xavier Young - DBA,2018-04-22,,2026-03-30,2026-03-01,2018-04-22,1030,2030,xyoung@acmecorp.com,Y
+YZHANG,Yuki Zhang - Security,2020-12-01,,2026-03-29,2026-02-20,2020-12-01,1031,2031,yzhang@acmecorp.com,Y
+ZALLEN,Zara Allen - Compliance,2021-09-15,,2026-03-28,2025-12-15,2021-09-15,1032,2032,zallen@acmecorp.com,Y

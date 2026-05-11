@@ -1,0 +1,6 @@
+COMPONENT_NAME,COMPONENT_TYPE,COMPONENT_STATUS
+Workflow Notification Mailer,WF_MAILER,STOPPED
+Workflow Deferred Agent Listener,WF_AGENT_LISTENER,STOPPED
+Workflow Error Agent Listener,WF_AGENT_LISTENER,RUNNING
+Workflow Java Deferred Agent Listener,WF_AGENT_LISTENER,STOPPED
+Workflow Background Process,WF_BACKGROUND,RUNNING
